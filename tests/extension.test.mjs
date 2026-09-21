@@ -8,10 +8,16 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { mergeLastGood } from "../src/moshi/sticky.js";
+
 const EXTENSION = fileURLToPath(new URL("../extensions/quota-panel.ts", import.meta.url));
+process.env.XDG_CACHE_HOME = mkdtempSync(join(tmpdir(), "pi-quota-extension-cache-"));
 
 /** Strips SGR sequences so assertions can talk about visible text. */
 const plain = (text) => String(text).replace(/\u001b\[[0-9;]*m/g, "");
@@ -85,6 +91,15 @@ const REPORT = {
  *
  * @param {{ report?: unknown, fail?: boolean }} [options]
  */
+function withFamilies(report) {
+  return {
+    ...report,
+    byFamily:
+      report.byFamily ??
+      Object.fromEntries(report.providers.map((provider) => [provider.family, report.providers.filter((other) => other.family === provider.family)])),
+  };
+}
+
 function makeHarness(options = {}) {
   const commands = [];
   const handlers = new Map();
@@ -97,7 +112,7 @@ function makeHarness(options = {}) {
     on: (name, handler) => handlers.set(name, handler),
     exec: async () => {
       if (options.fail) throw new Error("piquota exploded");
-      return { stdout: JSON.stringify(options.report ?? REPORT), stderr: "", code: 0 };
+      return { stdout: JSON.stringify(withFamilies(options.report ?? REPORT)), stderr: "", code: 0 };
     },
     registerCommand: (name, definition) => commands.push({ name, definition }),
     registerTool: () => forbidden.push("registerTool"),
@@ -110,7 +125,7 @@ function makeHarness(options = {}) {
   const ctx = {
     hasUI: true,
     ui: {
-      theme: { fg: (_key, text) => text, bold: (text) => text },
+      theme: options.theme ?? { fg: (_key, text) => text, bold: (text) => text },
       setStatus: (_key, value) => statuses.push(value),
       setWidget: (_key, value) => widgets.push(value),
       notify: (message) => notifications.push(message),
@@ -163,7 +178,7 @@ test("the line shows used percent, not remaining", async () => {
   assert.match(visible, /Claude:○ 4%/);
   assert.match(visible, /Codex:○ 19%/);
   assert.match(visible, /Agy:◕ 62%/);
-  assert.match(visible, /OP-Go:!/);
+  assert.match(visible, /OP-Go:\?/);
   assert.equal(/left/.test(visible), false, "must not report remaining");
 });
 
@@ -370,6 +385,133 @@ test("unconfigured providers are omitted from the editor line and summary", asyn
   assert.match(visible, /Codex:○ 5%/);
   assert.equal(visible.includes("Agy"), false, "unconfigured Antigravity must not appear in the line");
   assert.equal(visible.includes("OP-Go"), false, "unconfigured OpenCode Go must not appear in the line");
+});
+
+test("renderLine distinguishes transient / throttle / expired / auth with category-specific glyphs", async () => {
+  const module = await import(EXTENSION);
+  const providers = [
+    ["transient", "HTTP 503 upstream"],
+    ["throttle", "HTTP 429 rate limited"],
+    ["expired", "token expired"],
+    ["auth", "HTTP 401 unauthorized"],
+  ].map(([family, error]) => ({
+    family,
+    label: family,
+    primaryWindowId: null,
+    account: "fixture@example.com",
+    plan: null,
+    windows: [],
+    error,
+    ok: false,
+    updatedAt: "2030-01-01T00:00:00.000Z",
+    expiresInMin: null,
+  }));
+  const harness = makeHarness({
+    report: { generatedAt: "2030-01-01T00:00:00.000Z", sources: [], warnings: [], providers },
+    theme: { fg: (key, text) => `[${key}:${text}]`, bold: (text) => text },
+  });
+  module.default(harness.pi);
+  await startSession(harness);
+
+  const line = plain(harness.widgets.at(-1)[0]);
+  assert.match(line, /transient:\[warning:~\]/);
+  assert.match(line, /throttle:\[warning:…\]/);
+  assert.match(line, /expired:\[error:!\]/);
+  assert.match(line, /auth:\[error:!\]/);
+});
+
+test("renderLine excludes notConfigured providers using the flag, not the error string", async () => {
+  const module = await import(EXTENSION);
+  const harness = makeHarness({
+    report: {
+      generatedAt: "2030-01-01T00:00:00.000Z",
+      sources: [],
+      warnings: [],
+      providers: [
+        {
+          family: "codex", label: "Codex", primaryWindowId: null, account: "fixture@example.com", plan: null, windows: [],
+          error: "no credential in the Pi store", ok: false, updatedAt: "2030-01-01T00:00:00.000Z", expiresInMin: null,
+        },
+        {
+          family: "claude", label: "Claude", primaryWindowId: null, account: "unknown", plan: null, windows: [],
+          error: "token expired", ok: false, notConfigured: true, updatedAt: "2030-01-01T00:00:00.000Z", expiresInMin: null,
+        },
+      ],
+    },
+  });
+  module.default(harness.pi);
+  await startSession(harness);
+
+  const line = plain(harness.widgets.at(-1)[0]);
+  assert.match(line, /Codex:\?/);
+  assert.equal(line.includes("Claude"), false);
+});
+
+test("when mergeLastGood restores a transient failure, the line paints the carried value and not !", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "pi-quota-extension-")), "last-good.json");
+  const good = structuredClone(REPORT.providers[0]);
+  const initial = withFamilies({ generatedAt: "2030-01-01T00:00:00.000Z", sources: [], warnings: [], providers: [good] });
+  mergeLastGood(initial, { path, now: 1_000 });
+  const failed = withFamilies({
+    generatedAt: "2030-01-01T00:01:00.000Z",
+    sources: [],
+    warnings: [],
+    providers: [{ ...good, windows: [], error: "request timed out", ok: false, note: null }],
+  });
+  const merged = mergeLastGood(failed, { path, now: 61_000 }).report;
+  const module = await import(EXTENSION);
+  const harness = makeHarness({ report: merged });
+  module.default(harness.pi);
+  await startSession(harness);
+
+  const line = plain(harness.widgets.at(-1)[0]);
+  assert.match(line, /Claude:○ 4%/);
+  assert.equal(line.includes("Claude:!"), false);
+  const quota = harness.commands.find((command) => command.name === "quota");
+  await quota.definition.handler("", harness.ctx);
+  assert.match(plain(harness.widgets.at(-1).join("\n")), /last known values, 1 min old/);
+});
+
+test("renderPanel footer lists notConfigured providers using the flag", async () => {
+  const module = await import(EXTENSION);
+  const harness = makeHarness({
+    report: {
+      generatedAt: "2030-01-01T00:00:00.000Z",
+      sources: [],
+      warnings: [],
+      providers: [
+        { ...structuredClone(REPORT.providers[0]), error: "no credential in the Pi store", ok: false, windows: [] },
+        { ...structuredClone(REPORT.providers[1]), error: "token expired", ok: false, windows: [], notConfigured: true },
+      ],
+    },
+  });
+  module.default(harness.pi);
+  const quota = harness.commands.find((command) => command.name === "quota");
+  await quota.definition.handler("panel", harness.ctx);
+
+  const panel = plain(harness.widgets.at(-1).join("\n"));
+  assert.match(panel, /Codex/);
+  assert.match(panel, /not configured in Pi: Codex/);
+  assert.equal(/not configured in Pi: Claude/.test(panel), false);
+});
+
+test("the bare /quota summary uses category captions, not the word unavailable for everything", async () => {
+  const module = await import(EXTENSION);
+  const harness = makeHarness({
+    report: {
+      generatedAt: "2030-01-01T00:00:00.000Z",
+      sources: [],
+      warnings: [],
+      providers: [{ ...structuredClone(REPORT.providers[0]), error: "token expired", ok: false, windows: [], expiresInMin: -1 }],
+    },
+  });
+  module.default(harness.pi);
+  const quota = harness.commands.find((command) => command.name === "quota");
+  await quota.definition.handler("", harness.ctx);
+
+  const summary = harness.notifications.at(-1);
+  assert.match(summary, /Claude: token expired/);
+  assert.equal(summary.includes("unavailable"), false);
 });
 
 test("the panel names the Claude store, and the line never does", async () => {

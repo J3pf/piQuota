@@ -131,9 +131,79 @@ test("compact and status renderers mention every provider", () => {
   assert.match(status, /15%/);
 });
 
-test("a degraded provider shows its reason in the status line without a percentage", () => {
-  const status = renderStatusLine([providerFixture({ ok: false, windows: [], error: "nope" })], plainPalette());
-  assert.match(status, /X !\s+n\/a/);
+test("transient upstream failure paints ~ + caption, not !", () => {
+  const status = renderStatusLine(
+    [providerFixture({ ok: false, windows: [], error: "upstream request failed: HTTP 502" })],
+    plainPalette(),
+  );
+  assert.match(status, /X ~ upstream temporarily unavailable/);
+  assert.equal(status.includes("!"), false);
+});
+
+test("throttle paints … + rate-limited caption", () => {
+  const status = renderStatusLine(
+    [providerFixture({ ok: false, windows: [], error: "upstream request failed: HTTP 429" })],
+    plainPalette(),
+  );
+  assert.match(status, /X … rate-limited upstream/);
+});
+
+test("expired token paints ! + token expired caption", () => {
+  const status = renderStatusLine(
+    [providerFixture({ ok: false, windows: [], error: "token expired" })],
+    plainPalette(),
+  );
+  assert.match(status, /X ! token expired/);
+});
+
+test("auth failure paints ! + credential rejected caption", () => {
+  const status = renderStatusLine(
+    [providerFixture({ ok: false, windows: [], error: "upstream request failed: HTTP 401" })],
+    plainPalette(),
+  );
+  assert.match(status, /X ! credential rejected/);
+});
+
+test("missing credential paints · + not configured caption when the provider is configured", () => {
+  const status = renderStatusLine(
+    [providerFixture({ ok: false, windows: [], error: "no codex credential in the Pi store" })],
+    plainPalette(),
+  );
+  assert.match(status, /X · not configured/);
+});
+
+test("unknown failure paints ? + unavailable caption", () => {
+  const status = renderStatusLine(
+    [providerFixture({ ok: false, windows: [], error: "API shape may have changed" })],
+    plainPalette(),
+  );
+  assert.match(status, /X \? unavailable/);
+});
+
+test("notConfigured providers are excluded from the status line entirely", () => {
+  const status = renderStatusLine(
+    [
+      providerFixture({ family: "claude", label: "Claude (Pi)" }),
+      providerFixture({ notConfigured: true, ok: false, windows: [], error: "no codex credential in the Pi store" }),
+    ],
+    plainPalette(),
+  );
+  assert.match(status, /C/);
+  assert.equal(status.includes("X"), false);
+
+  const empty = renderStatusLine(
+    [providerFixture({ notConfigured: true, ok: false, windows: [], error: "no codex credential in the Pi store" })],
+    plainPalette(),
+  );
+  assert.equal(empty, "quota: no configured providers");
+});
+
+test("a healthy provider with no remainingPercent shows ? + n/a", () => {
+  const status = renderStatusLine(
+    [providerFixture({ windows: [windowFixture({ remainingPercent: null })] })],
+    plainPalette(),
+  );
+  assert.match(status, /X \? n\/a/);
 });
 
 test("the headline window is the shortest one, not the most consumed", () => {

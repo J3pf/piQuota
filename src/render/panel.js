@@ -7,6 +7,7 @@
  */
 
 import { bar, percentText, ringGlyph, thresholdKey } from "./theme.js";
+import { errorCaption, errorKind } from "../providers/error-kind.js";
 import { humanReset, selectPrimaryWindow } from "../model.js";
 
 const FAMILY_SHORT = {
@@ -41,6 +42,31 @@ export function headlineWindow(provider) {
   return byId ?? selectPrimaryWindow(provider.windows ?? []);
 }
 
+/** @param {string} kind @returns {string} */
+function statusGlyphForKind(kind) {
+  switch (kind) {
+    case "transient":
+      return "~";
+    case "throttle":
+      return "…";
+    case "expired":
+    case "auth":
+      return "!";
+    case "missing":
+      return "·";
+    default:
+      return "?";
+  }
+}
+
+/** @param {string} kind @returns {string} */
+function statusPaintKeyForKind(kind) {
+  if (kind === "transient" || kind === "throttle") return "warn";
+  if (kind === "missing") return "dim";
+  if (kind === "unknown") return "unknown";
+  return "danger";
+}
+
 /**
  * Compact status-line text, e.g. `C ●  78%  ·  X ◑  44%  ·  A ○   8%  ·  G ! n/a`.
  *
@@ -49,9 +75,7 @@ export function headlineWindow(provider) {
  * @returns {string}
  */
 export function renderStatusLine(providers, paint) {
-  const active = providers.filter(
-    (provider) => !provider.notConfigured && !provider.error?.includes("no credential in the Pi store"),
-  );
+  const active = providers.filter((provider) => !provider.notConfigured);
   if (active.length === 0) return paint("dim", "quota: no configured providers");
 
   const parts = [];
@@ -59,10 +83,19 @@ export function renderStatusLine(providers, paint) {
     const short = FAMILY_SHORT[provider.family] ?? provider.family.slice(0, 1).toUpperCase();
     const window = headlineWindow(provider);
     const remaining = window?.remainingPercent ?? null;
-    const key = provider.ok ? thresholdKey(remaining) : "unknown";
-    const glyph = provider.ok ? ringGlyph(remaining) : "!";
-    const percent = provider.ok && remaining !== null ? `${Math.round(remaining)}%`.padStart(4) : " n/a";
-    parts.push(paint(key, `${short} ${glyph} ${percent}`));
+
+    if (!provider.ok) {
+      const kind = errorKind(provider.error);
+      parts.push(paint(statusPaintKeyForKind(kind), `${short} ${statusGlyphForKind(kind)} ${errorCaption(provider.error)}`));
+      continue;
+    }
+
+    if (remaining === null) {
+      parts.push(paint("unknown", `${short} ? n/a`));
+      continue;
+    }
+
+    parts.push(paint(thresholdKey(remaining), `${short} ${ringGlyph(remaining)} ${`${Math.round(remaining)}%`.padStart(4)}`));
   }
   return parts.join(paint("dim", "  ·  "));
 }

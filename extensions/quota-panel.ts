@@ -25,6 +25,9 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { errorCaption, errorKind, errorGlyph, isRecoverableError } from "../src/providers/error-kind.js";
+import { mergeLastGood } from "../src/moshi/sticky.js";
+
 const STATUS_KEY = "00-quota";
 const WIDGET_KEY = "quota-line";
 const REFRESH_MS = 60_000;
@@ -49,6 +52,7 @@ type QuotaProvider = {
   plan: string | null;
   windows: QuotaWindow[];
   error: string | null;
+  note?: string | null;
   ok: boolean;
   notConfigured?: boolean;
   sourceKind?: "pi" | "claude-code";
@@ -61,6 +65,7 @@ type QuotaReport = {
   generatedAt: string;
   sources: string[];
   warnings: string[];
+  byFamily: Record<string, QuotaProvider[]>;
 };
 
 type Theme = {
@@ -200,14 +205,17 @@ function humanDuration(seconds: number): string {
 function renderLine(report: QuotaReport, theme: Theme): string {
   // Only display providers that are configured in Pi.
   // A provider that is simply not configured does not belong in the editor line.
-  const active = report.providers.filter(
-    (provider) => !provider.notConfigured && !provider.error?.includes("no credential in the Pi store"),
-  );
+  const active = report.providers.filter((provider) => provider.notConfigured !== true);
   if (active.length === 0) return theme.fg("dim", "quota: no providers configured in Pi");
 
   const tokens = active.map((provider) => {
     const name = paint(BRAND[provider.family] ?? "#8B949E", `${SHORT_NAME[provider.family] ?? provider.family}:`);
-    if (!provider.ok) return `${name}${theme.fg("error", "!")}`;
+    if (!provider.ok) {
+      const kind = errorKind(provider.error);
+      const glyph = errorGlyph(provider.error);
+      const color = kind === "transient" || kind === "throttle" ? "warning" : kind === "expired" || kind === "auth" ? "error" : "dim";
+      return `${name}${theme.fg(color, glyph)}`;
+    }
 
     const used = usedOf(headline(provider));
     if (used === null) return `${name}${theme.fg("dim", "?")}`;
@@ -221,12 +229,8 @@ function renderLine(report: QuotaReport, theme: Theme): string {
 /** The detailed panel: every window, with a used-fraction bar. */
 function renderPanel(report: QuotaReport, theme: Theme): string[] {
   const lines: string[] = [];
-  const active = report.providers.filter(
-    (provider) => !provider.notConfigured && !provider.error?.includes("no credential in the Pi store"),
-  );
-  const unconfigured = report.providers.filter(
-    (provider) => provider.notConfigured || provider.error?.includes("no credential in the Pi store"),
-  );
+  const active = report.providers.filter((provider) => provider.notConfigured !== true);
+  const unconfigured = report.providers.filter((provider) => provider.notConfigured === true);
 
   for (const provider of active) {
     const name = paint(BRAND[provider.family] ?? "#8B949E", provider.label);
@@ -244,9 +248,14 @@ function renderPanel(report: QuotaReport, theme: Theme): string[] {
     lines.push(`${name} ${theme.fg("dim", `· ${meta.join(" · ")}`)}`);
 
     if (!provider.ok) {
-      lines.push(`  ${theme.fg("error", "!")} ${theme.fg("warning", provider.error ?? "unavailable")}`);
+      const kind = errorKind(provider.error);
+      const glyph = errorGlyph(provider.error);
+      const color = kind === "transient" || kind === "throttle" ? "warning" : kind === "expired" || kind === "auth" ? "error" : "dim";
+      lines.push(`  ${theme.fg(color, glyph)} ${theme.fg("warning", provider.note ?? errorCaption(provider.error))}`);
+      if (isRecoverableError(provider.error) && provider.note) lines.push(`  ${theme.fg("warning", provider.note)}`);
       continue;
     }
+    if (provider.note) lines.push(`  ${theme.fg("warning", `~ ${provider.note}`)}`);
     if (provider.windows.length === 0) {
       lines.push(`  ${theme.fg("dim", "no rate-limit windows reported")}`);
       continue;
@@ -350,7 +359,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     try {
       const next = await runCli(force ? ["--json", "--force"] : ["--json"]);
       if (disposed) return;
-      if (next) report = next;
+      if (next) report = mergeLastGood(next).report;
       paintUi(ctx);
     } finally {
       refreshing = false;
@@ -446,13 +455,11 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       ctx.ui.notify(`Quota unavailable: ${lastError}`, "error");
       return;
     }
-    const active = report.providers.filter(
-      (provider) => !provider.notConfigured && !provider.error?.includes("no credential in the Pi store"),
-    );
+    const active = report.providers.filter((provider) => provider.notConfigured !== true);
     const summary = active
       .map((provider) => {
         const name = SHORT_NAME[provider.family] ?? provider.family;
-        if (!provider.ok) return `${name}: unavailable`;
+        if (!provider.ok) return `${name}: ${errorCaption(provider.error)}`;
         const used = usedOf(headline(provider));
         return `${name}: ${used === null ? "n/a" : `${Math.round(used)}% used`}`;
       })
