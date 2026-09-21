@@ -25,8 +25,11 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { errorCaption, errorKind, errorGlyph, isRecoverableError } from "../src/providers/error-kind.js";
-import { mergeLastGood } from "../src/moshi/sticky.js";
+// `mergeLastGood` is intentionally NOT imported here: it lives in src/moshi/sticky.js
+// and the CLI (`bin/piquota.js`) already applies it on every `--json` run, so the
+// extension sees a report whose transiently-failed families already carry the last
+// good snapshot in `provider.note`. The classifier below mirrors src/providers/error-kind.js
+// so the extension can render category-specific glyphs without depending on the repo.
 
 const STATUS_KEY = "00-quota";
 const WIDGET_KEY = "quota-line";
@@ -197,6 +200,80 @@ function humanDuration(seconds: number): string {
   return `${seconds}s`;
 }
 
+type ErrorKind = "transient" | "throttle" | "expired" | "auth" | "missing" | "unknown";
+
+/**
+ * Classify a provider error so the renderer can paint a distinct glyph and
+ * caption per cause. Mirrors src/providers/error-kind.js so the extension is
+ * self-contained: the file lives in ~/.pi/agent/extensions and has no access
+ * to the repo's `src/` tree.
+ */
+function errorKind(error: string | null | undefined): ErrorKind {
+  if (!error || typeof error !== "string") return "unknown";
+  if (
+    /no [a-z-]+ credential|has no (anthropic|openai-codex|antigravity|opencode-go) (access )?token|no key stored|no "auth" cookie|no opencode\.ai session/i.test(
+      error,
+    )
+  ) {
+    return "missing";
+  }
+  if (
+    /token expired|token EXPIRED|token -?\d+m|expires in -\d+|sign-in expired|re-authenticate|expired or rejected|rejected by .* zen|rejected; run \/login|reconnect OpenCode in Pi/i.test(
+      error,
+    )
+  ) {
+    return "expired";
+  }
+  if (/HTTP 401|HTTP 403|401|403|unauthorized|forbidden|invalid_grant|token rejected/i.test(error)) {
+    return "auth";
+  }
+  if (/HTTP 429|rate limited|backing off|throttle/i.test(error)) {
+    return "throttle";
+  }
+  if (/HTTP 5\d\d|timed out|timeout|ECONNRESET|socket|network|fetch failed|ENOTFOUND|ETIMEDOUT|EPIPE|ECONNREFUSED|aborted|hang up/i.test(error)) {
+    return "transient";
+  }
+  return "unknown";
+}
+
+function isRecoverableError(error: string | null | undefined): boolean {
+  const kind = errorKind(error);
+  return kind === "transient" || kind === "throttle";
+}
+
+function errorGlyph(error: string | null | undefined): string {
+  switch (errorKind(error)) {
+    case "transient":
+      return "~";
+    case "throttle":
+      return "…";
+    case "expired":
+    case "auth":
+      return "!";
+    case "missing":
+      return "·";
+    default:
+      return "?";
+  }
+}
+
+function errorCaption(error: string | null | undefined): string {
+  switch (errorKind(error)) {
+    case "throttle":
+      return "rate-limited upstream";
+    case "transient":
+      return "upstream temporarily unavailable";
+    case "expired":
+      return "token expired";
+    case "auth":
+      return "credential rejected";
+    case "missing":
+      return "not configured";
+    default:
+      return "unavailable";
+  }
+}
+
 /**
  * The one-row line: brand-coloured name plus a semaphore and the used percent.
  *
@@ -359,7 +436,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     try {
       const next = await runCli(force ? ["--json", "--force"] : ["--json"]);
       if (disposed) return;
-      if (next) report = mergeLastGood(next).report;
+      if (next) report = next;
       paintUi(ctx);
     } finally {
       refreshing = false;
