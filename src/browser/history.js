@@ -59,9 +59,9 @@ export function pathOnly(url) {
 export function extractWorkspaceIds(urls) {
   /** @type {string[]} */
   const ids = [];
-  const ignored = new Set(["settings", "usage", "go", "keys", "members", "billing", "new"]);
+  const ignored = new Set(["settings", "usage", "go", "keys", "members", "billing", "new", "login", "auth"]);
   for (const url of urls) {
-    const match = pathOnly(url).match(/\/workspace\/([A-Za-z0-9_-]{4,})/);
+    const match = pathOnly(url).match(/\/(?:workspace|console)\/([A-Za-z0-9_-]{4,})/);
     if (!match) continue;
     if (ignored.has(match[1])) continue;
     if (!ids.includes(match[1])) ids.push(match[1]);
@@ -130,7 +130,7 @@ export function findRecentWorkspaceIds(options = {}) {
   let scanned = 0;
   for (const store of stores) {
     scanned += 1;
-    const urls = readVisitedUrls(store.path, { urlLike: "%opencode.ai/workspace/%", limit: 100 });
+    const urls = readVisitedUrls(store.path, { urlLike: "%opencode.ai/%", limit: 100 });
     const ids = extractWorkspaceIds(urls);
     if (ids.length > 0) return { ids, profile: store.profile, scanned };
   }

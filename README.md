@@ -401,7 +401,7 @@ extensions/moshi-approvals.ts  mirrors Pi's approval prompts to the phone
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 214 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 218 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store

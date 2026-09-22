@@ -29,7 +29,7 @@ import { describeStore, loadPiCredentials, resolveAuthPaths } from "../src/auth/
 import { redact } from "../src/http.js";
 import { humanReset } from "../src/model.js";
 import { discoverCookieStores, findCookie } from "../src/browser/cookies.js";
-import { OPENCODE_COOKIE_NAME, configPaths, discoverWorkspaceId, readGoPlan, resolveCookie, writeSecretFile } from "../src/opencode/session.js";
+import { OPENCODE_COOKIE_NAMES, configPaths, discoverWorkspaceId, readGoPlan, resolveCookie, writeSecretFile } from "../src/opencode/session.js";
 import { buildUsagePayload, discoverBaseUrl, moshiPaths, pushUsage, readHostCredentials } from "../src/moshi/client.js";
 import { buildArtifact, resolveArtifactPath, writeArtifact } from "../src/moshi/artifact.js";
 import { effectiveUsageCollection, readUsageCollection } from "../src/moshi/settings.js";
@@ -300,11 +300,14 @@ async function authOpenCode(argv) {
   let found = null;
   while (Date.now() < deadline) {
     await sleep(3);
-    const hit = findCookie({ host: "opencode.ai", name: OPENCODE_COOKIE_NAME, stores: readableFirefox });
-    if (hit.found && hit.value) {
-      found = hit;
-      break;
+    for (const name of OPENCODE_COOKIE_NAMES) {
+      const hit = findCookie({ host: "opencode.ai", name, stores: readableFirefox });
+      if (hit.found && hit.value) {
+        found = hit;
+        break;
+      }
     }
+    if (found) break;
   }
 
   if (!found) {

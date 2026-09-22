@@ -17,6 +17,35 @@
 import { buildWindow, clampPercent, finiteNumber, stringValue } from "../model.js";
 
 /**
+ * Convert Console API meter values into canonical quota windows.
+ *
+ * @param {unknown} meters
+ * @param {{ now?: number }} [options]
+ * @returns {import("../model.js").QuotaWindow[]}
+ */
+export function parseGoMeters(meters, options = {}) {
+  const source = record(meters);
+  if (!source) return [];
+
+  const definitions = [
+    ["fiveHour", "5h", "5h window", 18000],
+    ["week", "weekly", "Weekly window", 604800],
+    ["month", "monthly", "Monthly window", 2592000],
+  ];
+
+  return definitions.flatMap(([field, id, label, windowSeconds]) => {
+    const meter = record(source[field]);
+    if (!meter) return [];
+    const limit = Number(meter.limitMicroCents);
+    const used = Number(meter.usedMicroCents);
+    const usedPercent = Number.isFinite(limit) && limit > 0 && Number.isFinite(used)
+      ? Math.min(100, Math.max(0, (used / limit) * 100))
+      : null;
+    return [buildWindow({ id, label, usedPercent, resetsAt: meter.resetsAt, windowSeconds, now: options.now })];
+  });
+}
+
+/**
  * Canonical window ids in the order the Go plan presents them.
  *
  * The label separators matter: the live page renders "5-hour Usage" (hyphenated),

@@ -29,15 +29,21 @@ const WINDOWS_USERS_ROOT = "/mnt/c/Users";
  */
 
 /**
- * Firefox roots: native Linux plus every Windows profile reachable from WSL.
+ * Firefox roots: ~/.mozilla/firefox, plus native Windows %APPDATA% profiles,
+ * plus every Windows profile reachable from WSL.
  *
- * @param {{ home?: string, usersRoot?: string, platform?: string }} [options]
+ * @param {{ home?: string, appData?: string, usersRoot?: string, platform?: string }} [options]
  * @returns {string[]}
  */
 export function firefoxRoots(options = {}) {
   const home = options.home ?? homedir();
+  const platform = options.platform ?? process.platform;
   const roots = [join(home, ".mozilla", "firefox")];
-  if ((options.platform ?? process.platform) !== "win32" && existsSync(WINDOWS_USERS_ROOT)) {
+  if (platform === "win32") {
+    // Windows keeps profiles under %APPDATA%\Mozilla\Firefox, not ~/.mozilla/firefox.
+    const appData = options.appData ?? process.env.APPDATA ?? join(home, "AppData", "Roaming");
+    roots.push(join(appData, "Mozilla", "Firefox"));
+  } else if (existsSync(WINDOWS_USERS_ROOT)) {
     let entries = [];
     try {
       entries = readdirSync(options.usersRoot ?? WINDOWS_USERS_ROOT, { withFileTypes: true });

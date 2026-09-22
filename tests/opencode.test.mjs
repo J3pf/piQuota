@@ -4,16 +4,61 @@
 
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { findWorkspaceIds, htmlToText, parseGoDashboard, parsePercent, parseResetSeconds } from "../src/opencode/dashboard.js";
-import { readFirefoxCookies } from "../src/browser/cookies.js";
-import { configPaths, resolveCookie, writeSecretFile } from "../src/opencode/session.js";
+import { findWorkspaceIds, htmlToText, parseGoDashboard, parseGoMeters, parsePercent, parseResetSeconds } from "../src/opencode/dashboard.js";
+import { discoverCookieStores, readFirefoxCookies } from "../src/browser/cookies.js";
+import { configPaths, fetchGoStatusApi, resolveCookie, toCookieHeader, writeSecretFile } from "../src/opencode/session.js";
 
 const NOW = 1_800_000_000_000;
+
+test("Console API meters normalize into canonical quota windows", () => {
+  const windows = parseGoMeters({
+    fiveHour: { limitMicroCents: "1000", usedMicroCents: "250", resetsAt: "2027-01-15T08:00:00.000Z" },
+    week: { limitMicroCents: "1000", usedMicroCents: "1500", resetsAt: "2027-01-20T08:00:00.000Z" },
+    month: { limitMicroCents: "1000", usedMicroCents: "-10", resetsAt: "2027-02-01T08:00:00.000Z" },
+  }, { now: NOW });
+
+  assert.deepEqual(windows.map((window) => window.id), ["5h", "weekly", "monthly"]);
+  assert.deepEqual(windows.map((window) => window.usedPercent), [25, 100, 0]);
+  assert.deepEqual(windows.map((window) => window.windowSeconds), [18000, 604800, 2592000]);
+  assert.equal(windows[0].resetsAt, "2027-01-15T08:00:00.000Z");
+});
+
+test("Console cookie headers preserve complete values and name bare tokens", () => {
+  assert.equal(toCookieHeader("auth=already-complete; x=y"), "auth=already-complete; x=y");
+  assert.equal(toCookieHeader(" token "), "__Host-console_session=token; auth=token");
+  assert.equal(toCookieHeader(" token ", "auth"), "auth=token");
+});
+
+test("Console API fetches orgs and persists the organization that has Go meters", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-console-"));
+  const calls = [];
+  const response = (body) => ({ ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(body) });
+  const fetchFn = async (url, options) => {
+    calls.push({ url, options });
+    if (url.endsWith("/orgs")) return response([{ id: "wrk_console" }]);
+    return response({ access: { meters: {
+      fiveHour: { limitMicroCents: "100", usedMicroCents: "25", resetsAt: "2027-01-15T08:00:00.000Z" },
+      week: { limitMicroCents: "200", usedMicroCents: "50", resetsAt: "2027-01-20T08:00:00.000Z" },
+      month: { limitMicroCents: "300", usedMicroCents: "75", resetsAt: "2027-02-01T08:00:00.000Z" },
+    } } });
+  };
+
+  const result = await fetchGoStatusApi({ home, env: {}, cookie: "console-token", fetchFn, now: NOW });
+  assert.equal(result.ok, true);
+  assert.equal(result.workspaceId, "wrk_console");
+  assert.equal(result.planHint, "Go subscription");
+  assert.deepEqual(result.strategies, ["console-api"]);
+  assert.equal(calls[0].url, "https://opencode.ai/console/api/orgs");
+  assert.equal(calls[1].options.headers["x-org-id"], "wrk_console");
+  assert.equal(calls[1].options.headers.Cookie, "__Host-console_session=console-token; auth=console-token");
+  assert.equal(resolveCookie({ home, env: {}, allowBrowser: false }).found, false);
+  assert.equal(readFileSync(configPaths({ home, env: {} }).workspacePath, "utf-8").trim(), "wrk_console");
+});
 
 test("dashboard: renders data-slot usage items into canonical windows", () => {
   const html = `
@@ -116,6 +161,24 @@ test("cookie resolution explains why nothing was found", () => {
   assert.match(result.detail, /DPAPI/);
 });
 
+test("firefox roots on native Windows include %APPDATA%\\Mozilla\\Firefox", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-ff-win-"));
+  const appDataRoot = join(home, "AppData", "Roaming", "Mozilla", "Firefox");
+  const profileDir = join(appDataRoot, "Profiles", "release.default");
+  mkdirSync(profileDir, { recursive: true });
+  writeFileSync(
+    join(appDataRoot, "profiles.ini"),
+    "[Profile0]\nName=release\nIsRelative=1\nPath=Profiles/release.default\nDefault=1\n",
+  );
+  writeFileSync(join(profileDir, "cookies.sqlite"), "");
+
+  const stores = discoverCookieStores({ home, appData: join(home, "AppData", "Roaming"), platform: "win32" });
+  assert.equal(stores.length, 1);
+  assert.equal(stores[0].browser, "firefox");
+  assert.equal(stores[0].profile, "windows:Profile0 (default)");
+  assert.equal(stores[0].path, join(profileDir, "cookies.sqlite"));
+});
+
 test("the Firefox reader works on a copied database and is read-only", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-ff-"));
   const db = join(dir, "cookies.sqlite");
@@ -158,6 +221,11 @@ test("workspace ids are recovered from browser history, newest first", async () 
 
   const urls = readVisitedUrls(db, { urlLike: "%opencode.ai/workspace/%" });
   assert.deepEqual(extractWorkspaceIds(urls), ["wrk_NEWER", "wrk_OLDER"]);
+  assert.deepEqual(extractWorkspaceIds([
+    "https://opencode.ai/console/wrk_CONSOLE",
+    "https://opencode.ai/console/login",
+    "https://opencode.ai/console/auth",
+  ]), ["wrk_CONSOLE"]);
 
   const found = findRecentWorkspaceIds({ stores: [{ profile: "test", path: db }] });
   assert.equal(found.ids[0], "wrk_NEWER");

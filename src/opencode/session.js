@@ -17,11 +17,12 @@ import { dirname, join } from "node:path";
 import { discoverCookieStores, findCookie } from "../browser/cookies.js";
 import { findRecentWorkspaceIds } from "../browser/history.js";
 import { requestJson } from "../http.js";
-import { parseGoDashboard, findWorkspaceIds } from "./dashboard.js";
+import { parseGoDashboard, parseGoMeters, findWorkspaceIds } from "./dashboard.js";
 
 export const OPENCODE_ORIGIN = "https://opencode.ai";
 export const OPENCODE_COOKIE_HOST = "opencode.ai";
 export const OPENCODE_COOKIE_NAME = "auth";
+export const OPENCODE_COOKIE_NAMES = ["__Host-console_session", OPENCODE_COOKIE_NAME];
 
 const USER_AGENT =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
@@ -84,6 +85,7 @@ export function writeSecretFile(path, value) {
  *   detail: string,
  *   encryptedOnly: boolean,
  *   storeCount: number,
+ *   name?: string,
  * }}
  */
 export function resolveCookie(options = {}) {
@@ -101,23 +103,24 @@ export function resolveCookie(options = {}) {
   }
 
   const stores = options.stores ?? discoverCookieStores(options);
-  const hit = findCookie({
-    host: OPENCODE_COOKIE_HOST,
-    name: OPENCODE_COOKIE_NAME,
-    stores,
-    home: options.home,
-  });
-  if (hit.found) {
-    return {
-      found: true,
-      value: hit.value,
-      origin: "browser",
-      detail: hit.store ? `${hit.store.browser} ${hit.store.profile}` : "browser",
-      encryptedOnly: false,
-      storeCount: stores.length,
-    };
+  let lastHit = null;
+  for (const name of OPENCODE_COOKIE_NAMES) {
+    const hit = findCookie({ host: OPENCODE_COOKIE_HOST, name, stores, home: options.home });
+    if (hit.found) {
+      return {
+        found: true,
+        value: hit.value,
+        origin: "browser",
+        detail: hit.store ? `${hit.store.browser} ${hit.store.profile}` : "browser",
+        encryptedOnly: false,
+        storeCount: stores.length,
+        name,
+      };
+    }
+    lastHit = hit;
   }
 
+  const hit = lastHit ?? { encryptedOnly: false, candidates: 0 };
   return {
     found: false,
     origin: null,
@@ -126,7 +129,7 @@ export function resolveCookie(options = {}) {
         ? "no browser cookie store found"
         : hit.encryptedOnly
           ? "only encrypted Chromium stores found (DPAPI is unavailable from WSL)"
-          : `no "${OPENCODE_COOKIE_NAME}" cookie for ${OPENCODE_COOKIE_HOST} in ${hit.candidates} readable store(s)`,
+          : `no "${OPENCODE_COOKIE_NAMES.join("\" or \"")}" cookie for ${OPENCODE_COOKIE_HOST} in ${hit.candidates} readable store(s)`,
     encryptedOnly: hit.encryptedOnly,
     storeCount: stores.length,
   };
@@ -238,9 +241,122 @@ export async function discoverWorkspaceId(options) {
 }
 
 /**
- * Read the Go plan windows for one account.
+ * Format a supplied cookie value for an OpenCode request.
+ *
+ * @param {string} cookie
+ * @param {string} [cookieName]
+ * @returns {string}
+ */
+export function toCookieHeader(cookie, cookieName) {
+  const value = cookie.trim();
+  if (value.includes("=")) return value;
+  if (cookieName) return `${cookieName}=${value}`;
+  return `__Host-console_session=${value}; auth=${value}`;
+}
+
+/**
+ * Fetch Go quota meters from the Console API.
  *
  * @param {{
+ *   env?: Record<string, string | undefined>,
+ *   home?: string,
+ *   fetchFn?: typeof fetch,
+ *   timeoutMs?: number,
+ *   now?: number,
+ *   cookie?: string,
+ *   cookieName?: string,
+ *   workspaceId?: string,
+ *   stores?: import("../browser/cookies.js").CookieStore[],
+ *   allowBrowser?: boolean,
+ * }} [options]
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   windows: import("../model.js").QuotaWindow[],
+ *   workspaceId: string | null,
+ *   planHint: string | null,
+ *   strategies: string[],
+ *   cookieOrigin: string,
+ *   error: string | null,
+ * }>}
+ */
+export async function fetchGoStatusApi(options = {}) {
+  const cookie = options.cookie !== undefined
+    ? { found: Boolean(options.cookie), value: options.cookie, origin: "provided", name: options.cookieName }
+    : resolveCookie(options);
+  if (!cookie.found || !cookie.value) {
+    return {
+      ok: false, windows: [], workspaceId: null, planHint: null, strategies: [], cookieOrigin: "none",
+      error: `no OpenCode session cookie: ${cookie.detail ?? "not found"}`,
+    };
+  }
+
+  const headers = {
+    Cookie: toCookieHeader(cookie.value, cookie.name),
+    Accept: "application/json",
+    "User-Agent": USER_AGENT,
+  };
+  const ids = [];
+  for (const id of [options.workspaceId, resolveWorkspaceIdFromConfig(options)]) {
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+
+  const errors = [];
+  const tryStatus = async (orgId) => {
+    const response = await requestJson(`${OPENCODE_ORIGIN}/console/api/go/status`, {
+      fetchFn: options.fetchFn,
+      timeoutMs: options.timeoutMs,
+      headers: { ...headers, "x-org-id": orgId },
+    });
+    if (!response.ok) {
+      errors.push(response.error ?? `HTTP ${response.status}`);
+      return null;
+    }
+    const body = response.body && typeof response.body === "object" ? response.body : null;
+    const access = body && "access" in body && body.access && typeof body.access === "object" ? body.access : null;
+    const meters = access && "meters" in access ? access.meters : null;
+    const windows = parseGoMeters(meters, { now: options.now });
+    if (windows.length === 0) {
+      errors.push("Console API returned no Go usage meters");
+      return null;
+    }
+    writeSecretFile(configPaths(options).workspacePath, orgId);
+    return {
+      ok: true, windows, workspaceId: orgId, planHint: "Go subscription", strategies: ["console-api"],
+      cookieOrigin: String(cookie.origin), error: null,
+    };
+  };
+
+  for (const orgId of ids) {
+    const result = await tryStatus(orgId);
+    if (result) return result;
+  }
+
+  const orgs = await requestJson(`${OPENCODE_ORIGIN}/console/api/orgs`, {
+    fetchFn: options.fetchFn,
+    timeoutMs: options.timeoutMs,
+    headers,
+  });
+  if (orgs.ok && Array.isArray(orgs.body)) {
+    for (const org of orgs.body) {
+      const orgId = org && typeof org === "object" && typeof org.id === "string" ? org.id : null;
+      if (!orgId || ids.includes(orgId)) continue;
+      const result = await tryStatus(orgId);
+      if (result) return result;
+    }
+  } else {
+    errors.push(orgs.error ?? `HTTP ${orgs.status}`);
+  }
+
+  return {
+    ok: false, windows: [], workspaceId: null, planHint: null, strategies: [],
+    cookieOrigin: String(cookie.origin), error: errors[0] ?? "Console API returned no organizations",
+  };
+}
+
+/**
+ * Read the Go plan windows for one account.
+ *
+ * @param {{ 
  *   env?: Record<string, string | undefined>,
  *   home?: string,
  *   fetchFn?: typeof fetch,
@@ -260,6 +376,9 @@ export async function discoverWorkspaceId(options) {
  * }>}
  */
 export async function readGoPlan(options = {}) {
+  const apiResult = await fetchGoStatusApi(options);
+  if (apiResult.ok) return apiResult;
+
   const now = options.now ?? Date.now();
   const cookie = options.cookie !== undefined
     ? { found: Boolean(options.cookie), value: options.cookie, origin: "provided", detail: "provided", encryptedOnly: false, storeCount: 0 }
