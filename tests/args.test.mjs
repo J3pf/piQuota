@@ -64,6 +64,12 @@ test("a subcommand value flag without a usable value is reported", () => {
   assert.deepEqual(parseArgs(["moshi", "watch", "--interval", "--fetch-ttl", "300"]).unknown, ["--interval"]);
 });
 
+test("--box enables the compact box widget", () => {
+  const args = parseArgs(["--box"]);
+  assert.equal(args.box, true);
+  assert.deepEqual(args.unknown, []);
+});
+
 test("a genuinely unknown flag is collected for the caller to reject", () => {
   assert.deepEqual(parseArgs(["--banana"]).unknown, ["--banana"]);
   assert.deepEqual(parseArgs(["--stauts"]).unknown, ["--stauts"]);

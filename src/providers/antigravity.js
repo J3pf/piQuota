@@ -20,8 +20,8 @@ import { requestJson } from "../http.js";
 import { describeOAuthClient, ensureFreshAccessToken } from "./antigravity-oauth.js";
 
 const CLOUD_CODE_BASES = [
-  "https://cloudcode-pa.googleapis.com",
   "https://daily-cloudcode-pa.googleapis.com",
+  "https://cloudcode-pa.googleapis.com",
 ];
 const CLI_USER_AGENT =
   "antigravity/cli/1.1.13 (aidev_client; os_type=linux; arch=amd64; cl=964361259; auth_method=consumer)";

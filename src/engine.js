@@ -127,6 +127,7 @@ const PROVIDERS = {
  *   fetchFn?: typeof fetch,
  *   timeoutMs?: number,
  *   refresh?: boolean,
+ *   force?: boolean,
  *   stores?: import("./browser/cookies.js").CookieStore[],
  *   allowBrowser?: boolean,
  *   claudeCodePaths?: string[] | null,
@@ -205,12 +206,12 @@ export async function collectQuota(options = {}) {
         const freshness = checkFreshness(credential, now);
         return !freshness.fresh;
       });
-      if (hasExpiredToken) {
+      if (hasExpiredToken || options.force) {
         clearBackoff(family, { env, home: options.home });
       }
 
       const throttle = backoffState(family, { now, env, home: options.home });
-      if (throttle.active) {
+      if (throttle.active && !options.force) {
         byFamily[family] = [
           degradedResult({
             family,

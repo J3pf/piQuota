@@ -130,8 +130,8 @@ import { dirname, join } from "node:path";
 
 import { isAuthFailure } from "../providers/backoff.js";
 
-/** Maximum age for a sticky / last-good snapshot before it is considered stale (30 minutes). */
-export const DEFAULT_MAX_STICKY_AGE_MS = 30 * 60 * 1000;
+/** Maximum age for a sticky / last-good snapshot before it is considered stale (4 hours). */
+export const DEFAULT_MAX_STICKY_AGE_MS = 4 * 60 * 60 * 1000;
 
 /**
  * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]

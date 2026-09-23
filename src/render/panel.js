@@ -8,7 +8,7 @@
 
 import { bar, percentText, ringGlyph, thresholdKey } from "./theme.js";
 import { errorCaption, errorKind } from "../providers/error-kind.js";
-import { humanReset, selectPrimaryWindow } from "../model.js";
+import { humanDuration, humanReset, selectPrimaryWindow } from "../model.js";
 
 const FAMILY_SHORT = {
   claude: "C",
@@ -209,13 +209,68 @@ function renderWindow(window, paint, contentWidth) {
 }
 
 /**
- * Boxed panel for the terminal.
+ * Compact five-row quota widget, aligned against the terminal's right edge.
  *
  * @param {import("../model.js").QuotaResult[]} providers
  * @param {import("./theme.js").Paint} paint
- * @param {{ generatedAt?: string, warnings?: string[], maxWidth?: number }} [meta]
+ * @param {number} [totalWidth]
  * @returns {string[]}
  */
+export function renderBoxWidget(providers, paint, totalWidth = typeof process?.stdout?.columns === "number" ? process.stdout.columns : 80) {
+  const isFiveHour = (window) =>
+    window?.id === "5h" || /5h|session|hour/i.test(`${window?.id ?? ""} ${window?.label ?? ""}`) ||
+    (typeof window?.windowSeconds === "number" && window.windowSeconds <= 6 * 3600);
+  const providerFor = (family) => providers.find((provider) => provider.family === family);
+  const windowFor = (family, match = isFiveHour) => {
+    const provider = providerFor(family);
+    return { provider, window: provider?.windows?.find(match) ?? null };
+  };
+  const usedOf = (win) => {
+    if (!win) return null;
+    if (typeof win.usedPercent === "number" && Number.isFinite(win.usedPercent)) return win.usedPercent;
+    if (typeof win.remainingPercent === "number" && Number.isFinite(win.remainingPercent)) return 100 - win.remainingPercent;
+    return null;
+  };
+  const rows = [
+    { label: "Claude: ", ...windowFor("claude") },
+    { label: "Codex:  ", ...windowFor("codex") },
+    { label: "Agy:    ", ...windowFor("antigravity", (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window))) },
+    { label: "Agy C/G:", ...windowFor("antigravity", (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))) },
+    { label: "OP-Go:  ", ...windowFor("opencode-go") },
+  ];
+
+  const content = rows.map(({ label, provider, window }) => {
+    const name = paint("bold", label);
+    if (!provider || !provider.ok) {
+      const error = provider ? errorCaption(provider.error) : "not configured";
+      return { left: `${name} ${paint("danger", `! ${error}`)}`, right: "" };
+    }
+    const used = usedOf(window);
+    let mid = paint("unknown", "? n/a");
+    if (used !== null) {
+      const rem = Math.max(0, 100 - used);
+      const key = thresholdKey(rem);
+      mid = `${paint(key, ringGlyph(rem))} ${paint(key, `${Math.round(used)}%`.padStart(4))}`;
+    }
+    return {
+      left: `${name} ${mid}`,
+      right: paint("dim", `R:${humanDuration(window?.resetsInSec ?? null)}`),
+    };
+  });
+  const innerWidth = Math.max(25, ...content.map(({ left, right }) => visibleLength(left) + (right ? 2 + visibleLength(right) : 0)));
+  const box = [
+    paint("accent", `╭─ Quota ${"─".repeat(Math.max(0, innerWidth - 7))}╮`),
+    ...content.map(({ left, right }) => {
+      const padding = right
+        ? " ".repeat(Math.max(1, innerWidth - visibleLength(left) - visibleLength(right)))
+        : " ".repeat(Math.max(0, innerWidth - visibleLength(left)));
+      return `${paint("accent", "│")} ${left}${padding}${right} ${paint("accent", "│")}`;
+    }),
+    paint("accent", `╰${"─".repeat(innerWidth + 2)}╯`),
+  ];
+  return box.map((line) => `${" ".repeat(Math.max(0, totalWidth - visibleLength(line)))}${line}`);
+}
+
 export function renderPanel(providers, paint, meta = {}) {
   const terminalWidth = typeof process?.stdout?.columns === "number" ? process.stdout.columns : MAX_WIDTH;
   const hardMax = Math.max(MIN_WIDTH, Math.min(meta.maxWidth ?? MAX_WIDTH, terminalWidth - 2, MAX_WIDTH));

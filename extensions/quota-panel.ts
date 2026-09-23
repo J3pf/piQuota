@@ -33,6 +33,8 @@ import { join } from "node:path";
 
 const STATUS_KEY = "00-quota";
 const WIDGET_KEY = "quota-line";
+const SIDEBAR_STATE_KEY = Symbol.for("gentle-pi.experimental-sidebar.state");
+const SIDEBAR_CACHE_KEY = Symbol.for("gentle-pi.experimental-sidebar.cache");
 const REFRESH_MS = 60_000;
 const EXEC_TIMEOUT_MS = 30_000;
 
@@ -83,7 +85,7 @@ type UiContext = {
   ui: {
     theme: Theme;
     setStatus: (key: string, value: string | undefined) => void;
-    setWidget: (key: string, value: string[] | undefined, options?: { placement?: string }) => void;
+    setWidget: (key: string, value: any, options?: { placement?: string }) => void;
     notify: (message: string, type?: string) => void;
   };
 };
@@ -189,7 +191,8 @@ function bar(usedPercent: number | null, width = 10): string {
   return "█".repeat(filled) + "░".repeat(Math.max(0, width - filled));
 }
 
-function humanDuration(seconds: number): string {
+function humanDuration(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds)) return "unknown";
   if (seconds <= 0) return "now";
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
@@ -277,7 +280,7 @@ function errorCaption(error: string | null | undefined): string {
 /**
  * The one-row line: brand-coloured name plus a semaphore and the used percent.
  *
- *   Claude:○ 0%   Codex:○ 8%   Agy:○ 4%   OP-Go:○ 3%
+ *   Claude:○ 0%   Codex:○ 8%   Agy:○ 4%   Agy C/G:○ 4%   OP-Go:○ 3%
  */
 function renderLine(report: QuotaReport, theme: Theme): string {
   // Only display providers that are configured in Pi.
@@ -285,22 +288,134 @@ function renderLine(report: QuotaReport, theme: Theme): string {
   const active = report.providers.filter((provider) => provider.notConfigured !== true);
   if (active.length === 0) return theme.fg("dim", "quota: no providers configured in Pi");
 
-  const tokens = active.map((provider) => {
-    const name = paint(BRAND[provider.family] ?? "#8B949E", `${SHORT_NAME[provider.family] ?? provider.family}:`);
+  const renderToken = (provider: QuotaProvider, label: string, window: QuotaWindow | null, color = BRAND[provider.family] ?? "#8B949E"): string => {
+    const name = paint(color, `${label}:`);
     if (!provider.ok) {
       const kind = errorKind(provider.error);
       const glyph = errorGlyph(provider.error);
-      const color = kind === "transient" || kind === "throttle" ? "warning" : kind === "expired" || kind === "auth" ? "error" : "dim";
-      return `${name}${theme.fg(color, glyph)}`;
+      const tone = kind === "transient" || kind === "throttle" ? "warning" : kind === "expired" || kind === "auth" ? "error" : "dim";
+      return `${name}${theme.fg(tone, glyph)}`;
     }
 
-    const used = usedOf(headline(provider));
+    const used = usedOf(window);
     if (used === null) return `${name}${theme.fg("dim", "?")}`;
 
     const band = bandFor(used);
     return `${name}${paint(band.color, band.glyph)} ${paint(band.color, `${Math.round(used)}%`)}`;
+  };
+  const tokens = active.flatMap((provider) => {
+    if (provider.family !== "antigravity") {
+      return [renderToken(provider, SHORT_NAME[provider.family] ?? provider.family, headline(provider))];
+    }
+    return [
+      renderToken(provider, "Agy", provider.windows.find((window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window)))),
+      renderToken(provider, "Agy C/G", provider.windows.find((window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))), "#7AA2F7"),
+    ];
   });
   return tokens.join("  ");
+}
+
+function visibleLength(text: string): number {
+  return text.replace(/\u001b\[[0-9;]*m/g, "").length;
+}
+
+function isFiveHour(window: QuotaWindow): boolean {
+  return (
+    window.id === "5h" ||
+    /5h|session|hour/i.test(`${window.id} ${window.label}`) ||
+    (typeof window.windowSeconds === "number" && window.windowSeconds <= 6 * 3600)
+  );
+}
+
+/** Compact five-row quota widget aligned to the right edge of the editor. */
+export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number): string[] {
+  const providerFor = (family: string): QuotaProvider | undefined => report.providers.find((provider) => provider.family === family);
+  const windowFor = (family: string, matches: (window: QuotaWindow) => boolean) => {
+    const provider = providerFor(family);
+    return { provider, window: provider?.windows.find(matches) ?? null };
+  };
+  const rows = [
+    { label: "Claude: ", color: "#D97757", ...windowFor("claude", isFiveHour) },
+    { label: "Codex:  ", color: "#10A37F", ...windowFor("codex", isFiveHour) },
+    { label: "Agy:    ", color: "#4285F4", ...windowFor("antigravity", (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window))) },
+    { label: "Agy C/G:", color: "#7AA2F7", ...windowFor("antigravity", (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))) },
+    { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go", isFiveHour) },
+  ];
+  const content = rows.map(({ label, color, provider, window }) => {
+    const name = paint(color, label);
+    if (!provider || !provider.ok) {
+      return { left: `${name} ${theme.fg("error", `! ${provider ? errorCaption(provider.error) : "not configured"}`)}`, right: "" };
+    }
+    const used = usedOf(window);
+    let mid = theme.fg("dim", "? n/a");
+    if (used !== null) {
+      const band = bandFor(used);
+      mid = paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`);
+    }
+    return {
+      left: `${name} ${mid}`,
+      right: `${theme.fg("dim", "R:")}${paint("#E0AF68", humanDuration(window?.resetsInSec ?? null))}`,
+    };
+  });
+  const innerWidth = Math.max(25, ...content.map(({ left, right }) => visibleLength(left) + (right ? 2 + visibleLength(right) : 0)));
+  const box = [
+    `╭─ Quota ${"─".repeat(Math.max(0, innerWidth - 7))}╮`,
+    ...content.map(({ left, right }) => {
+      const padding = right
+        ? " ".repeat(Math.max(1, innerWidth - visibleLength(left) - visibleLength(right)))
+        : " ".repeat(Math.max(0, innerWidth - visibleLength(left)));
+      return `│ ${left}${padding}${right} │`;
+    }),
+    `╰${"─".repeat(innerWidth + 2)}╯`,
+  ];
+  const width = totalWidth ?? (process.stdout.columns || 80);
+  return box.map((line) => `${" ".repeat(Math.max(0, width - visibleLength(line)))}${line}`);
+}
+
+function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: number): string[] {
+  const cardWidth = Math.max(12, width);
+  const innerWidth = cardWidth - 4;
+  const providerFor = (family: string): QuotaProvider | undefined => report?.providers.find((provider) => provider.family === family);
+  const windowFor = (family: string, matches: (window: QuotaWindow) => boolean) => {
+    const provider = providerFor(family);
+    return { provider, window: provider?.windows.find(matches) ?? null };
+  };
+  const rows = report
+    ? [
+        { label: "Claude: ", color: "#D97757", ...windowFor("claude", isFiveHour) },
+        { label: "Codex:  ", color: "#10A37F", ...windowFor("codex", isFiveHour) },
+        { label: "Agy:    ", color: "#4285F4", ...windowFor("antigravity", (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window))) },
+        { label: "Agy C/G:", color: "#7AA2F7", ...windowFor("antigravity", (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))) },
+        { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go", isFiveHour) },
+      ]
+    : [];
+  const content = rows.length > 0
+    ? rows.map(({ label, color, provider, window }) => {
+        const name = paint(color, label);
+        const showingLastKnownValues = Boolean(provider?.note && /last known values/i.test(provider.note));
+        if (!provider || (!provider.ok && !showingLastKnownValues)) {
+          return { left: `${name} ! ${provider ? errorCaption(provider.error) : "not configured"}`, right: "" };
+        }
+        const used = usedOf(window);
+        if (used === null) return { left: `${name} ? n/a`, right: "" };
+        const band = bandFor(used);
+        const indicator = showingLastKnownValues ? `${theme.fg("warning", "~")} ` : "";
+        return {
+          left: `${name} ${indicator}${paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`)}`,
+          right: `${theme.fg("dim", "R:")}${paint("#E0AF68", humanDuration(window?.resetsInSec ?? null))}`,
+        };
+      })
+    : [{ left: theme.fg("dim", "loading quota …"), right: "" }];
+  return [
+    `╭─ Quota ${"─".repeat(Math.max(0, cardWidth - 10))}╮`,
+    ...content.map(({ left, right }) => {
+      const padding = right
+        ? " ".repeat(Math.max(1, innerWidth - visibleLength(left) - visibleLength(right)))
+        : " ".repeat(Math.max(0, innerWidth - visibleLength(left)));
+      return `│ ${left}${padding}${right} │`;
+    }),
+    `╰${"─".repeat(cardWidth - 2)}╯`,
+  ];
 }
 
 /** The detailed panel: every window, with a used-fraction bar. */
@@ -371,12 +486,14 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   let refreshing = false;
   let timer: ReturnType<typeof setInterval> | null = null;
   let panelVisible = false;
-  /** The line is the default surface: its own row, nothing competes for it. */
+  /** The compact box is the default surface: its own row, nothing competes for it. */
   let lineVisible = true;
+  let boxVisible = true;
   /** gentle-pi owns the footer and truncates it from the end, so start off. */
   let statusVisible = false;
   let lastError: string | null = null;
   let disposed = false;
+  let sidebarTui: any = null;
 
   async function runCli(args: string[]): Promise<QuotaReport | null> {
     const cli = resolveCliPath();
@@ -406,6 +523,10 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   function paintUi(ctx: UiContext): void {
     if (disposed) return;
     const theme = ctx.ui.theme;
+    if (sidebarTui?.terminal?.[SIDEBAR_CACHE_KEY]) {
+      sidebarTui.terminal[SIDEBAR_CACHE_KEY].revision++;
+    }
+    sidebarTui?.requestRender?.();
 
     if (statusVisible) {
       ctx.ui.setStatus(STATUS_KEY, report ? renderLine(report, theme) : theme.fg("dim", "quota …"));
@@ -413,21 +534,56 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       ctx.ui.setStatus(STATUS_KEY, undefined);
     }
 
-    // Before the first refresh there is no data and no error: say "loading", not
-    // "unavailable". A false error flashing on every session start looks broken.
-    const pending = lastError
-      ? theme.fg("warning", lastError)
-      : theme.fg("dim", "quota …");
-    const fallback = [pending];
     if (panelVisible && report) {
       ctx.ui.setWidget(WIDGET_KEY, renderPanel(report, theme), { placement: "aboveEditor" });
-    } else if (lineVisible && report) {
-      ctx.ui.setWidget(WIDGET_KEY, [renderLine(report, theme)], { placement: "aboveEditor" });
-    } else if (panelVisible || lineVisible) {
-      ctx.ui.setWidget(WIDGET_KEY, fallback, { placement: "aboveEditor" });
-    } else {
-      ctx.ui.setWidget(WIDGET_KEY, undefined);
+      return;
     }
+
+    ctx.ui.setWidget(
+      WIDGET_KEY,
+      (tui: any, widgetTheme: Theme) => {
+        sidebarTui = tui;
+        const state = tui?.terminal?.[SIDEBAR_STATE_KEY];
+        const rail = {
+          digest: () => report
+            ? `${report.generatedAt}:${report.providers
+                .map((provider) => provider.windows
+                  .map((window) => [window.id, window.usedPercent, window.remainingPercent, window.resetsAt, window.resetsInSec].join(","))
+                  .join(";"))
+                .join("|")}`
+            : "loading",
+          render: (w: number) => renderSidebarCard(report, widgetTheme || theme, w),
+          invalidate() {},
+        };
+        if (state) {
+          state.parts.set("quota", rail);
+          if (tui?.terminal?.[SIDEBAR_CACHE_KEY]) {
+            tui.terminal[SIDEBAR_CACHE_KEY].revision++;
+          }
+        }
+        tui?.requestRender?.();
+        return {
+          render: (w: number) => {
+            if (!boxVisible && lineVisible && report) {
+              return [renderLine(report, widgetTheme || theme)];
+            }
+            if (state?.active && state?.ownsHost?.()) return [];
+            if (boxVisible && report) return renderBox(report, widgetTheme || theme, w);
+            if (lineVisible && report) return [renderLine(report, widgetTheme || theme)];
+            return [];
+          },
+          dispose: () => {
+            if (state?.parts?.get("quota") === rail) {
+              state.parts.delete("quota");
+              if (tui?.terminal?.[SIDEBAR_CACHE_KEY]) {
+                tui.terminal[SIDEBAR_CACHE_KEY].revision++;
+              }
+            }
+          },
+        };
+      },
+      { placement: "aboveEditor" },
+    );
   }
 
   async function refresh(ctx: UiContext, force: boolean): Promise<void> {
@@ -487,23 +643,33 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       case "line":
       case "widget":
         lineVisible = true;
+        boxVisible = false;
         panelVisible = false;
         if (!report) await refresh(ctx, false);
         paintUi(ctx);
         ctx.ui.notify("Quota line pinned above the editor", "info");
         return;
       case "panel":
-      case "box":
         panelVisible = true;
         lineVisible = false;
+        boxVisible = false;
         if (!report) await refresh(ctx, false);
         paintUi(ctx);
         ctx.ui.notify("Quota panel shown above the editor", "info");
+        return;
+      case "box":
+        lineVisible = true;
+        boxVisible = true;
+        panelVisible = false;
+        if (!report) await refresh(ctx, false);
+        paintUi(ctx);
+        ctx.ui.notify("Quota box pinned above the editor", "info");
         return;
       case "hide":
       case "off":
         panelVisible = false;
         lineVisible = false;
+        boxVisible = false;
         paintUi(ctx);
         ctx.ui.notify("Quota line hidden", "info");
         return;
@@ -526,6 +692,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     // Bare /quota: refresh, show the panel, and report the used percentages.
     panelVisible = true;
     lineVisible = false;
+    boxVisible = false;
     await refresh(ctx, true);
     paintUi(ctx);
     if (!report) {
@@ -547,7 +714,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   pi.registerCommand("quota", {
     description: "Show read-only provider quota (used %, shortest window)",
     getArgumentCompletions: (prefix: string) => {
-      const options = ["refresh", "line", "panel", "hide", "status", "nostatus", "json"];
+      const options = ["refresh", "line", "box", "panel", "hide", "status", "nostatus", "json"];
       const matches = options.filter((option) => option.startsWith(prefix));
       return matches.length > 0 ? matches.map((value) => ({ value, label: value })) : null;
     },

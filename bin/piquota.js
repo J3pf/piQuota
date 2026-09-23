@@ -24,7 +24,7 @@ import { collectQuota, FAMILIES } from "../src/engine.js";
 import { clearCache, describeCache, resolveCachePath, withCache } from "../src/cache.js";
 import { parseArgs } from "../src/cli/args.js";
 import { ansiPalette } from "../src/render/theme.js";
-import { renderCompact, renderPanel, renderStatusLine } from "../src/render/panel.js";
+import { renderBoxWidget, renderCompact, renderPanel, renderStatusLine } from "../src/render/panel.js";
 import { describeStore, loadPiCredentials, resolveAuthPaths } from "../src/auth/pi-auth.js";
 import { redact } from "../src/http.js";
 import { humanReset } from "../src/model.js";
@@ -72,6 +72,7 @@ Quota:
   --json             Emit the normalized report as JSON
   --compact, -c      One line per provider
   --status           Single line with rings
+  --box              Compact right-aligned 5-row box widget
   --no-color         Disable ANSI colors
   --no-cache         Skip the local cache
   --force            Ignore a still-fresh cache entry
@@ -751,7 +752,7 @@ async function main() {
   }
 
   const selected = families.length > 0 ? families : FAMILIES;
-  const load = () => collectQuota({ families: selected, timeoutMs: args.timeoutMs, refresh });
+  const load = () => collectQuota({ families: selected, timeoutMs: args.timeoutMs, refresh, force: args.force });
 
   let report;
   let cached = false;
@@ -785,7 +786,9 @@ async function main() {
     out(renderStatusLine(report.providers, paint));
     return 0;
   }
-  if (args.compact) {
+  if (args.box) {
+    for (const line of renderBoxWidget(report.providers, paint)) out(line);
+  } else if (args.compact) {
     for (const line of renderCompact(report.providers, paint)) out(line);
   } else {
     for (const line of renderPanel(report.providers, paint, {
