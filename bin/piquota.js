@@ -13,6 +13,8 @@
  *   piquota moshi service ...    install/remove the user service that runs `moshi watch`
  *   piquota moshi takeover       become the only usage publisher on the paired host
  *   piquota moshi release        hand usage publishing back to moshi-hook's own poller
+ *   piquota gentle-pi <status|apply|revert>
+ *                                the rail slot gentle-pi needs to paint the quota card
  */
 
 import { spawnSync } from "node:child_process";
@@ -38,6 +40,7 @@ import { clearTakeover, readTakeover, setMoshiUsageCollection, writeTakeover } f
 import { confirmDaemonUsageCollection, resolveHookLogPath, restartMoshiDaemon } from "../src/moshi/daemon.js";
 import { describeClaudeCodeSource } from "../src/auth/claude-code-auth.js";
 import { loadLastPublished, mergeLastGood, mergeSticky, saveLastPublished } from "../src/moshi/sticky.js";
+import { applyRailPatch, inspectRailPatch, resolveGentlePiLayout, revertRailPatch } from "../src/gentle-pi/rail-patch.js";
 
 const VERSION = "0.5.0";
 const OPENCODE_LOGIN_URL = "https://opencode.ai/auth";
@@ -67,6 +70,7 @@ Usage:
   piquota [families...] [flags]
   piquota auth <opencode|status> [flags]
   piquota moshi <push|watch|artifact|status|service|takeover|release> [flags]
+  piquota gentle-pi <status|apply|revert>
 
 Quota:
   --json             Emit the normalized report as JSON
@@ -108,6 +112,10 @@ Guarantees:
   * Antigravity's access token may be refreshed in memory; it is never persisted.
   * Browser cookie databases are copied and opened read-only; values are never logged.
   * Only percentages, window labels, reset times and plan names leave this machine.
+  * \`gentle-pi\` is the one file this tool edits outside its own state: it appends
+    piQuota's part to gentle-pi's rail allowlist so the card can be painted there.
+    The edit is one array literal, it is reversible with \`piquota gentle-pi revert\`,
+    and the previous revision is kept next to the file as a \`.pi-quota-backup\`.
 `;
 
 /**
@@ -715,6 +723,37 @@ async function main() {
     if (sub === "status") return authStatus();
     err(`unknown auth action: ${sub}`);
     return 2;
+  }
+
+  // Handled before family resolution: `gentle-pi` is a subcommand, not a provider.
+  if (command === "gentle-pi") {
+    const sub = bare[1] ?? "status";
+    if (sub !== "status" && sub !== "apply" && sub !== "revert") {
+      err(`unknown gentle-pi action: ${sub}`);
+      err("expected one of: status, apply, revert");
+      return 2;
+    }
+    const layout = resolveGentlePiLayout();
+    if (!layout.present) {
+      out("gentle-pi: not installed");
+      out("nothing to do: piQuota renders its own widget without the rail");
+      return 0;
+    }
+    out(`gentle-pi: ${layout.layoutPath}`);
+    if (sub === "status") {
+      const inspected = inspectRailPatch({ layoutPath: layout.layoutPath });
+      out(`rail patch: ${inspected.state} (${inspected.detail})`);
+      if (inspected.state !== "patched") {
+        out("run `piquota gentle-pi apply`, or let the extension repair it at session start");
+      }
+      return inspected.state === "unknown" ? 1 : 0;
+    }
+    const result = sub === "revert"
+      ? revertRailPatch({ layoutPath: layout.layoutPath })
+      : applyRailPatch({ layoutPath: layout.layoutPath });
+    out(`rail patch: ${result.state} — ${result.detail}`);
+    if (result.backupPath) out(`backup: ${result.backupPath}`);
+    return result.ok ? 0 : 1;
   }
 
   const { families, unknown } = resolveFamilies(

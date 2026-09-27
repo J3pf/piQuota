@@ -1,0 +1,47 @@
+# OpenSpec configuration for piQuota
+version: 1
+
+project:
+  name: pi-quota
+  type: node
+  package_type: module
+  runtime: "node >= 20.0.0"
+  description: "Read-only quota monitor for AI provider credentials Pi owns: terminal CLI, Pi TUI line, and Moshi usage and approval cards"
+
+sdd:
+  strict_tdd: true
+  execution_mode: auto
+  artifact_store: openspec
+  delivery_strategy: ask-on-risk
+  review_budget: 400
+  phases:
+    init:
+      required: true
+    requirements:
+      required: true
+    design:
+      required: true
+    tasks:
+      required: true
+    impl:
+      required: true
+    verify:
+      required: true
+
+testing:
+  runner: node-test
+  test_command: "npm test"
+  test_pattern: "tests/*.test.mjs"
+
+conventions:
+  style: "Vanilla Node.js ESM modules in src/ and tests/, TypeScript for Pi extensions in extensions/"
+  architecture:
+    - "CLI entry point in bin/piquota.js and src/cli/"
+    - "Core engine in src/engine.js"
+    - "Providers in src/providers/"
+    - "Moshi integration in src/moshi/"
+    - "Pi extensions in extensions/ (e.g. quota-panel.ts, moshi-approvals.ts)"
+  rules:
+    - "Strict TDD: tests must be added or updated with changes; npm test must pass 100%"
+    - "Silent failure in extension hooks: approvals/metrics hooks must never crash or interrupt the user's turn"
+    - "No secrets leak: auth tokens and credentials must be redacted in diagnostics and envelopes"

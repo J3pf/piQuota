@@ -74,6 +74,13 @@ if [[ "$MODE" == "uninstall" ]]; then
   fi
   rm -f "$BIN_DIR/piquota" "$BIN_DIR/shuvquota"
   rm -f "$EXT_DIR/quota-panel.ts" "$EXT_DIR/moshi-approvals.ts"
+  # The rail slot only exists for the extension that reads it, so leaving it behind
+  # would keep a patched third-party package with no consumer.
+  if [[ -f "$PREFIX/src/gentle-pi/rail-patch.js" ]]; then
+    if ! node "$PREFIX/src/gentle-pi/rail-patch.js" --revert 2>&1 | sed 's/^/  /'; then
+      warn "the gentle-pi rail slot could not be reverted; run: piquota gentle-pi revert"
+    fi
+  fi
   rm -rf "$PREFIX"
   ok "removed the tree, the shims, the Pi extension and background services"
   warn "credentials and settings were left untouched"
@@ -185,13 +192,47 @@ if [[ -L "$BIN_DIR/shuvquota" && "$(readlink -f "$BIN_DIR/shuvquota" 2>/dev/null
   warn "cleaned up legacy shuvquota shim; upstream shuvquota is accessible again"
 fi
 
-cp "$HERE/extensions/quota-panel.ts" "$EXT_DIR/quota-panel.ts"
-ok "Pi TUI quota extension installed: $EXT_DIR/quota-panel.ts"
+# --link prefers a symlink so the repository stays the single source of truth: a
+# copy goes stale the moment the extension changes, and Pi then runs code the
+# developer never edited. Git Bash's ln silently copies when the platform denies
+# symlink creation (Windows without Developer Mode), so the link is verified
+# instead of trusted, and the copy fallback says what actually happened.
+install_extension() {
+  # One assignment per statement: bash expands every right-hand side of a single
+  # `local` before assigning any of them, so `$name` would still be unset here.
+  local name="$1"
+  local label="$2"
+  local src="$HERE/extensions/$name"
+  local dst="$EXT_DIR/$name"
+  rm -f "$dst"
+  if [[ "$MODE" == "link" ]] && ln -sfn "$src" "$dst" 2>/dev/null && [[ -L "$dst" ]]; then
+    ok "$label linked: $dst -> $src"
+    return
+  fi
+  cp "$src" "$dst"
+  if [[ "$MODE" == "link" ]]; then
+    warn "$label copied, not linked: this platform denied symlink creation."
+    warn "  Re-run ./install.sh after editing $name, or enable Developer Mode for real links."
+  else
+    ok "$label installed: $dst"
+  fi
+}
+
+install_extension "quota-panel.ts" "Pi TUI quota extension"
+
+# gentle-pi paints its right rail from a hardcoded allowlist, so the quota card only
+# appears there once piQuota's part is added to it. The extension re-checks and
+# re-applies this on every session start; doing it here means the first Pi run after
+# installing already has the slot instead of waiting for the next session.
+if [[ -f "$PREFIX/src/gentle-pi/rail-patch.js" ]]; then
+  if ! node "$PREFIX/src/gentle-pi/rail-patch.js" --apply 2>&1 | sed 's/^/  /'; then
+    warn "the gentle-pi rail slot could not be patched; the quota box still renders above the editor"
+  fi
+fi
 
 # Approval mirroring only makes sense with a daemon to mirror to.
 if command -v moshi-hook >/dev/null 2>&1; then
-  cp "$HERE/extensions/moshi-approvals.ts" "$EXT_DIR/moshi-approvals.ts"
-  ok "Pi approval mirror installed: $EXT_DIR/moshi-approvals.ts"
+  install_extension "moshi-approvals.ts" "Pi approval mirror"
 else
   log "skipped the approval mirror: it needs moshi-hook as the daemon to send to"
 fi

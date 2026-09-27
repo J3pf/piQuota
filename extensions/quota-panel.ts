@@ -23,7 +23,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // `mergeLastGood` is intentionally NOT imported here: it lives in src/moshi/sticky.js
 // and the CLI (`bin/piquota.js`) already applies it on every `--json` run, so the
@@ -33,8 +34,12 @@ import { join } from "node:path";
 
 const STATUS_KEY = "00-quota";
 const WIDGET_KEY = "quota-line";
+const RAIL_KEY = "quota";
+// gentle-pi publishes its rail state on the terminal, so the only way to know the
+// rail is painting the card (and the above-editor box would duplicate it) is to read
+// it. Every read is guarded: when the rail slot was never patched in, nothing here
+// runs and the box stays the only surface.
 const SIDEBAR_STATE_KEY = Symbol.for("gentle-pi.experimental-sidebar.state");
-const SIDEBAR_CACHE_KEY = Symbol.for("gentle-pi.experimental-sidebar.cache");
 const REFRESH_MS = 60_000;
 const EXEC_TIMEOUT_MS = 30_000;
 
@@ -319,6 +324,29 @@ function visibleLength(text: string): number {
   return text.replace(/\u001b\[[0-9;]*m/g, "").length;
 }
 
+/**
+ * Clip themed text to a visible width without cutting an ANSI sequence in half.
+ * gentle-pi drops the entire rail when one card line overflows its column, so a
+ * long error caption must shorten the line instead of widening it.
+ */
+function clipVisible(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (visibleLength(text) <= width) return text;
+  const tokens = text.match(/\u001b\[[0-9;]*m|[\s\S]/g) ?? [];
+  let out = "";
+  let used = 0;
+  for (const token of tokens) {
+    if (token.startsWith("\u001b")) {
+      out += token;
+      continue;
+    }
+    if (used >= width - 1) break;
+    out += token;
+    used += 1;
+  }
+  return `${out}\u2026\u001b[0m`;
+}
+
 function isFiveHour(window: QuotaWindow): boolean {
   return (
     window.id === "5h" ||
@@ -373,7 +401,7 @@ export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number
 }
 
 function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: number): string[] {
-  const cardWidth = Math.max(12, width);
+  const cardWidth = Math.max(4, width);
   const innerWidth = cardWidth - 4;
   const providerFor = (family: string): QuotaProvider | undefined => report?.providers.find((provider) => provider.family === family);
   const windowFor = (family: string, matches: (window: QuotaWindow) => boolean) => {
@@ -409,12 +437,16 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
   return [
     `╭─ Quota ${"─".repeat(Math.max(0, cardWidth - 10))}╮`,
     ...content.map(({ left, right }) => {
-      const padding = right
-        ? " ".repeat(Math.max(1, innerWidth - visibleLength(left) - visibleLength(right)))
-        : " ".repeat(Math.max(0, innerWidth - visibleLength(left)));
-      return `│ ${left}${padding}${right} │`;
+      // The right column is dropped before the left one is clipped: a reset countdown
+      // matters less than the provider name and its percentage.
+      const fits = right !== "" && 2 + visibleLength(left) + 2 + visibleLength(right) + 2 <= cardWidth;
+      const rightText = fits ? right : "";
+      const leftRoom = innerWidth - (rightText === "" ? 0 : visibleLength(rightText) + 1);
+      const leftText = clipVisible(left, Math.max(1, leftRoom));
+      const padding = " ".repeat(Math.max(0, innerWidth - visibleLength(leftText) - visibleLength(rightText)));
+      return `│ ${leftText}${padding}${rightText} │`;
     }),
-    `╰${"─".repeat(cardWidth - 2)}╯`,
+    `╰${"─".repeat(Math.max(0, cardWidth - 2))}╯`,
   ];
 }
 
@@ -493,7 +525,46 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   let statusVisible = false;
   let lastError: string | null = null;
   let disposed = false;
-  let sidebarTui: any = null;
+  /** True once the installed gentle-pi is known to paint a rail slot for this card. */
+  let railMode = false;
+
+  /**
+   * The rail patcher lives in the installed CLI tree, which is the only copy the
+   * extension can reach: it is loaded from ~/.pi/agent/extensions and has no access
+   * to the repository's src/. A missing tree is not an error, it just means the
+   * native box stays the only surface.
+   */
+  async function loadRailPatcher(): Promise<{
+    resolveGentlePiLayout: (options?: { dir?: string }) => { layoutPath: string; present: boolean };
+    ensureRailPatch: (options: { layoutPath: string }) => { repaired: boolean; ok: boolean; state: string; detail: string };
+  } | null> {
+    const cli = resolveCliPath();
+    if (!cli) return null;
+    const modulePath = join(dirname(cli), "..", "src", "gentle-pi", "rail-patch.js");
+    if (!existsSync(modulePath)) return null;
+    try {
+      return await import(pathToFileURL(modulePath).href);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Validate the gentle-pi rail slot on every session start and repair it when a
+   * gentle-pi update replaced the patched file with the stock revision.
+   */
+  async function syncRailPatch(ctx: UiContext): Promise<void> {
+    railMode = false;
+    const patcher = await loadRailPatcher();
+    if (!patcher) return;
+    const layout = patcher.resolveGentlePiLayout();
+    if (!layout.present) return;
+    const result = patcher.ensureRailPatch({ layoutPath: layout.layoutPath });
+    railMode = result.ok && result.state === "patched";
+    if (result.repaired) {
+      ctx.ui.notify(`gentle-pi lost the quota rail slot (${result.detail}); it has been re-applied. Restart Pi to load it.`, "info");
+    }
+  }
 
   async function runCli(args: string[]): Promise<QuotaReport | null> {
     const cli = resolveCliPath();
@@ -523,10 +594,6 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   function paintUi(ctx: UiContext): void {
     if (disposed) return;
     const theme = ctx.ui.theme;
-    if (sidebarTui?.terminal?.[SIDEBAR_CACHE_KEY]) {
-      sidebarTui.terminal[SIDEBAR_CACHE_KEY].revision++;
-    }
-    sidebarTui?.requestRender?.();
 
     if (statusVisible) {
       ctx.ui.setStatus(STATUS_KEY, report ? renderLine(report, theme) : theme.fg("dim", "quota …"));
@@ -539,46 +606,44 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       return;
     }
 
+    if (!boxVisible && !lineVisible) {
+      ctx.ui.setWidget(WIDGET_KEY, undefined);
+      return;
+    }
+
     ctx.ui.setWidget(
       WIDGET_KEY,
       (tui: any, widgetTheme: Theme) => {
-        sidebarTui = tui;
-        const state = tui?.terminal?.[SIDEBAR_STATE_KEY];
-        const rail = {
-          digest: () => report
+        const state = railMode ? tui?.terminal?.[SIDEBAR_STATE_KEY] : undefined;
+        const activeTheme = widgetTheme || theme;
+        const digest = () =>
+          report
             ? `${report.generatedAt}:${report.providers
-                .map((provider) => provider.windows
-                  .map((window) => [window.id, window.usedPercent, window.remainingPercent, window.resetsAt, window.resetsInSec].join(","))
-                  .join(";"))
+                .map((provider) =>
+                  provider.windows
+                    .map((window) => [window.id, window.usedPercent, window.remainingPercent, window.resetsAt, window.resetsInSec].join(","))
+                    .join(";"),
+                )
                 .join("|")}`
-            : "loading",
-          render: (w: number) => renderSidebarCard(report, widgetTheme || theme, w),
+            : "loading";
+        const rail = {
+          digest,
+          render: (w: number) => renderSidebarCard(report, activeTheme, w),
           invalidate() {},
         };
-        if (state) {
-          state.parts.set("quota", rail);
-          if (tui?.terminal?.[SIDEBAR_CACHE_KEY]) {
-            tui.terminal[SIDEBAR_CACHE_KEY].revision++;
-          }
-        }
-        tui?.requestRender?.();
+        if (state?.parts) state.parts.set(RAIL_KEY, rail);
         return {
           render: (w: number) => {
-            if (!boxVisible && lineVisible && report) {
-              return [renderLine(report, widgetTheme || theme)];
-            }
+            // The rail is painting the card in its own column, so an above-editor box
+            // would show the same numbers twice.
             if (state?.active && state?.ownsHost?.()) return [];
-            if (boxVisible && report) return renderBox(report, widgetTheme || theme, w);
-            if (lineVisible && report) return [renderLine(report, widgetTheme || theme)];
+            if (!report) return [activeTheme.fg("dim", "quota …")];
+            if (boxVisible) return renderBox(report, activeTheme, w);
+            if (lineVisible) return [renderLine(report, activeTheme)];
             return [];
           },
           dispose: () => {
-            if (state?.parts?.get("quota") === rail) {
-              state.parts.delete("quota");
-              if (tui?.terminal?.[SIDEBAR_CACHE_KEY]) {
-                tui.terminal[SIDEBAR_CACHE_KEY].revision++;
-              }
-            }
+            if (state?.parts?.get(RAIL_KEY) === rail) state.parts.delete(RAIL_KEY);
           },
         };
       },
@@ -603,6 +668,9 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     const ui = ctx as unknown as UiContext;
     if (!ui.hasUI) return;
     disposed = false;
+    // The rail decision must be made before the first paint, so a repaired slot is
+    // used immediately instead of after one frame of the above-editor box.
+    await syncRailPatch(ui);
     paintUi(ui);
     void refresh(ui, false);
     if (timer) clearInterval(timer);

@@ -177,6 +177,7 @@ Inside Pi:
 | Command | Effect |
 | --- | --- |
 | `/quota` | refresh, reveal the panel, notify a one-line summary |
+| `/quota box` | pin the five-row box above the editor (the default surface) |
 | `/quota line` | pin the compact line above the editor, in its own row |
 | `/quota panel` | full boxed panel above the editor |
 | `/quota hide` | hide the panel/line |
@@ -185,13 +186,23 @@ Inside Pi:
 | `/quota json` | where the cached report lives |
 | `/usage` | alias of `/quota` |
 
-### The Pi line
+### The Pi surface
 
-By default the extension pins **one row above the editor**:
+By default the extension pins the **five-row box above the editor**:
 
 ```
-Claude:○ 0%  Codex:○ 8%  Agy:○ 4%  OP-Go:○ 4%
+              ╭─ Quota ──────────────────╮
+              │ Claude:  ○   0%   R:3h 12m │
+              │ Codex:   ○   8%   R:2h 40m │
+              │ Agy:     ○   4%      R:41m │
+              │ Agy C/G: ? n/a  R:unknown │
+              │ OP-Go:   ○   4%   R:1h 05m │
+              ╰───────────────────────────╯
 ```
+
+When gentle-pi's fullscreen sidebar is active, the same card is painted in its
+right rail instead, under Status and TODO, and the above-editor box stays quiet so
+the numbers are not shown twice. See [the rail slot](#the-gentle-pi-rail-slot).
 
 * each name is painted with its **own brand colour** — Claude `#D97757`, Codex
   `#10A37F`, Antigravity `#4285F4`, OpenCode `#007AFF`;
@@ -224,6 +235,50 @@ which is why a long status line appears and then vanishes once the bar fills wit
 cost, branch and usage data. The quota line therefore lives in its own row, where
 nothing competes for it. `/quota status` still enables the footer variant for
 anyone who wants it.
+
+### The gentle-pi rail slot
+
+gentle-pi paints its right rail from a **hardcoded allowlist**, so a part that
+another extension registers is silently never drawn:
+
+```ts
+const sections = ["footer", "agents", "todo"].map((key) => { /* ... */ });
+```
+
+piQuota registers its card under `quota`, which that list does not include. There is
+no injection point, so the card cannot appear in the rail on its own. The fix is one
+anchored edit that appends the part:
+
+```ts
+const sections = ["footer", "agents", "todo", "quota"].map((key) => { /* ... */ });
+```
+
+`piquota gentle-pi` owns that edit:
+
+* `piquota gentle-pi status` — report whether the rail renders the quota part;
+* `piquota gentle-pi apply` — append the part (idempotent);
+* `piquota gentle-pi revert` — remove the part and restore the original bytes.
+
+Because a gentle-pi update replaces the package, the patch would otherwise vanish.
+The extension therefore **validates the slot on every session start** and re-applies
+it when it is gone, reporting the repair instead of doing it silently. `install.sh`
+applies it at install time and reverts it on `--uninstall`.
+
+Safety properties, all covered by `tests/rail-patch.test.mjs`:
+
+* exactly one array literal is rewritten; every other byte of the file is untouched;
+* an unrecognized shape is **refused**, never guessed at, because a wrong rewrite of
+  another extension's layout would break the whole rail;
+* the write is atomic, the pre-patch revision is kept as a one-time
+  `.pi-quota-backup` next to the file, and the result is re-read after writing with a
+  restore from that backup when it does not read back as patched;
+* `PI_QUOTA_GENTLE_PI_DIR` points the lookup elsewhere, which is what keeps the test
+  suite away from a real installation.
+
+If gentle-pi is absent, or the slot cannot be applied, nothing breaks: the card stays
+in the box above the editor. The rail only exists in fullscreen at 140 columns or
+wider, so the suppression of that box is conditional on gentle-pi reporting its rail
+as active — in regular mode or a narrow terminal the box is the only surface.
 
 ## Approvals on the phone
 
@@ -401,7 +456,7 @@ extensions/moshi-approvals.ts  mirrors Pi's approval prompts to the phone
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 218 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 238 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store
