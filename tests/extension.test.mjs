@@ -306,27 +306,47 @@ test("the line shows used percent, not remaining", async () => {
 });
 
 test("each provider name is painted with its own brand colour", async () => {
-  const module = await import(EXTENSION);
-  const harness = makeHarness();
-  module.default(harness.pi);
-  await startSession(harness);
+  const prevTerm = process.env.TERM;
+  const prevNoColor = process.env.NO_COLOR;
+  process.env.TERM = "xterm-256color";
+  delete process.env.NO_COLOR;
+  try {
+    const module = await import(EXTENSION);
+    const harness = makeHarness();
+    module.default(harness.pi);
+    await startSession(harness);
 
-  const raw = String(renderWidget(harness.widgets.at(-1)).join("\n"));
-  assert.match(raw, /\u001b\[38;2;217;119;87m/, "Claude clay");
-  assert.match(raw, /\u001b\[38;2;16;163;127m/, "Codex teal");
-  assert.match(raw, /\u001b\[38;2;66;133;244m/, "Google blue");
+    const raw = String(renderWidget(harness.widgets.at(-1)).join("\n"));
+    assert.match(raw, /\u001b\[38;2;217;119;87m/, "Claude clay");
+    assert.match(raw, /\u001b\[38;2;16;163;127m/, "Codex teal");
+    assert.match(raw, /\u001b\[38;2;66;133;244m/, "Google blue");
+  } finally {
+    process.env.TERM = prevTerm;
+    if (prevNoColor !== undefined) process.env.NO_COLOR = prevNoColor;
+    else delete process.env.NO_COLOR;
+  }
 });
 
 test("the semaphore changes colour and shape with the used band", async () => {
-  const module = await import(EXTENSION);
-  const harness = makeHarness();
-  module.default(harness.pi);
-  await startSession(harness);
-  const raw = String(renderWidget(harness.widgets.at(-1)).join("\n"));
+  const prevTerm = process.env.TERM;
+  const prevNoColor = process.env.NO_COLOR;
+  process.env.TERM = "xterm-256color";
+  delete process.env.NO_COLOR;
+  try {
+    const module = await import(EXTENSION);
+    const harness = makeHarness();
+    module.default(harness.pi);
+    await startSession(harness);
+    const raw = String(renderWidget(harness.widgets.at(-1)).join("\n"));
 
-  assert.ok(raw.includes("#3FB950") === false);
-  assert.match(raw, /\u001b\[38;2;63;185;80m○/, "green empty circle for low usage");
-  assert.match(raw, /\u001b\[38;2;210;153;34m◕/, "amber half circle for mid usage");
+    assert.ok(raw.includes("#3FB950") === false);
+    assert.match(raw, /\u001b\[38;2;63;185;80m○/, "green empty circle for low usage");
+    assert.match(raw, /\u001b\[38;2;210;153;34m◕/, "amber half circle for mid usage");
+  } finally {
+    process.env.TERM = prevTerm;
+    if (prevNoColor !== undefined) process.env.NO_COLOR = prevNoColor;
+    else delete process.env.NO_COLOR;
+  }
 });
 
 test("NO_COLOR is honoured so a mono terminal stays readable", async () => {

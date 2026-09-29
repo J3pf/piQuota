@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const DOCS = ["README.md", "docs/AUTH-FIELDS.md", "docs/MOSHI.md", "docs/OS-COMPATIBILITY.md"];
+const DOCS = ["README.md", "AGENTS.md", "docs/AUTH-FIELDS.md", "docs/MOSHI.md", "docs/OS-COMPATIBILITY.md"];
 
 /** @param {string} path */
 function linesOf(path) {

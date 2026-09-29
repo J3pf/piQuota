@@ -5,6 +5,9 @@ One source of truth for quota: **the credentials Pi already owns**.
 `pi-quota` is a standalone project. It does not import, invoke or modify
 shuvquota, and it never writes to a credential file.
 
+> [!TIP]
+> **Working with AI Agents?** See [AGENTS.md](AGENTS.md) for architectural boundaries, test runner commands, and hard invariants for AI coding agents.
+
 | Surface | Command |
 | --- | --- |
 | Terminal | `piquota` · `piquota --json` · `piquota --status` |
