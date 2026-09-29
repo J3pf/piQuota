@@ -302,3 +302,36 @@ test("neither Claude source configured degrades as not-configured, not as a fail
   assert.equal(claude.notConfigured, true);
   assert.match(claude.error, /no claude credential/);
 });
+
+test("warnings from parallel provider fetches are deterministically ordered by families", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-warn-order-"));
+  const fetchFn = /** @type {typeof fetch} */ (async (url) => {
+    const urlStr = String(url);
+    if (urlStr.includes("anthropic")) {
+      await new Promise((r) => setTimeout(r, 20));
+      return jsonResponse({}, { status: 429, headers: { "retry-after": "60" } });
+    }
+    if (urlStr.includes("chatgpt")) {
+      await new Promise((r) => setTimeout(r, 5));
+      return jsonResponse({}, { status: 429, headers: { "retry-after": "60" } });
+    }
+    return jsonResponse({});
+  });
+
+  const report = await collectQuota({
+    paths: [FIXTURE],
+    claudeCodePaths: [],
+    now: NOW,
+    fetchFn,
+    families: ["claude", "codex"],
+    env: {},
+    home,
+    stores: [],
+    allowBrowser: false,
+  });
+
+  const throttledWarnings = report.warnings.filter((w) => w.includes("throttled upstream"));
+  assert.equal(throttledWarnings.length, 2);
+  assert.ok(throttledWarnings[0].startsWith("claude:"));
+  assert.ok(throttledWarnings[1].startsWith("codex:"));
+});

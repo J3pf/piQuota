@@ -27,12 +27,27 @@ export function mergeReportIntoCache(existingReport, newReport) {
   const newFamilies = Object.keys(newReport.byFamily || {});
   const allFamilies = Array.from(new Set([...existingFamilies, ...newFamilies]));
   const providers = allFamilies.flatMap((family) => mergedByFamily[family] || []);
+
+  const keptExistingWarnings = (existingReport.warnings || []).filter((w) => {
+    const family = String(w).split(":")[0];
+    return !newFamilies.includes(family);
+  });
+  const seenPatterns = new Set();
+  const warnings = [];
+  for (const w of [...(newReport.warnings || []), ...keptExistingWarnings]) {
+    const pattern = w.replace(/\d+m ago/, "Xm ago").replace(/\d+s old/, "Xs old").replace(/\d+s\b/, "Xs");
+    if (!seenPatterns.has(pattern)) {
+      seenPatterns.add(pattern);
+      warnings.push(w);
+    }
+  }
+
   return {
     ...existingReport,
     ...newReport,
     providers,
     byFamily: mergedByFamily,
-    warnings: Array.from(new Set([...(existingReport.warnings || []), ...(newReport.warnings || [])])),
+    warnings,
   };
 }
 

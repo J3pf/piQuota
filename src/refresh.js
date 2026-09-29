@@ -69,7 +69,7 @@ export function staleFamilies(options) {
 export function resolveRefreshStatePath(options = {}) {
   if (options.statePath) return options.statePath;
   const env = options.env ?? process.env;
-  const cacheHome = env.XDG_CACHE_HOME || join(options.home ?? homedir(), ".cache");
+  const cacheHome = options.home ? join(options.home, ".cache") : (env.XDG_CACHE_HOME || join(homedir(), ".cache"));
   return join(cacheHome, "pi-quota", "refresh-state.json");
 }
 
@@ -237,7 +237,14 @@ export async function collectWithCadence(options) {
     if (!families.includes(family)) delete fetchedAtMs[family];
   }
 
-  const stale = staleFamilies({ fetchedAtMs, ttls, families, now });
+  const cachedFamilies = cached?.report?.byFamily ? Object.keys(cached.report.byFamily) : [];
+  const stale = families.filter((family) => {
+    if (!cachedFamilies.includes(family)) return true;
+    const fetchedAt = fetchedAtMs[family];
+    if (typeof fetchedAt !== "number") return true;
+    const ttlSec = ttls[family] ?? DEFAULT_FAMILY_TTL_SEC;
+    return now - fetchedAt >= ttlSec * 1000;
+  });
   const reusable = cached
     ? cached.report.providers.filter((provider) => !stale.includes(provider.family)).map((provider) => provider.family)
     : [];

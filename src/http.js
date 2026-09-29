@@ -22,6 +22,8 @@ export function redact(value) {
   text = text.replace(/\b(ya29\.)[A-Za-z0-9_-]+/g, "$1<redacted>");
   text = text.replace(/\b(1\/\/)[A-Za-z0-9_-]+/g, "$1<redacted>");
   text = text.replace(/\b(rt\.[\w.]{4})[A-Za-z0-9_-]+/g, "$1<redacted>");
+  text = text.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1<redacted>");
+  text = text.replace(/\b((?:__Host-console_session|auth)=)[^;\s]+/gi, "$1<redacted>");
   return text;
 }
 

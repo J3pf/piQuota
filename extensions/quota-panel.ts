@@ -672,9 +672,11 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     // The rail decision must be made before the first paint, so a repaired slot is
     // used immediately instead of after one frame of the above-editor box.
     await syncRailPatch(ui);
+    if (disposed) return;
     paintUi(ui);
     void refresh(ui, false);
     if (timer) clearInterval(timer);
+    if (disposed) return;
     timer = setInterval(() => {
       if (!ui.hasUI || disposed) return;
       void refresh(ui, false);

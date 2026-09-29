@@ -181,6 +181,25 @@ function windowsChromiumRoots(options = {}) {
   return roots;
 }
 
+const activeCookieCleanups = new Set();
+if (typeof process !== "undefined" && typeof process.on === "function") {
+  const runCleanups = () => {
+    for (const fn of activeCookieCleanups) {
+      try { fn(); } catch {}
+    }
+    activeCookieCleanups.clear();
+  };
+  process.once("exit", runCleanups);
+  process.once("SIGINT", () => {
+    runCleanups();
+    process.exit(130);
+  });
+  process.once("SIGTERM", () => {
+    runCleanups();
+    process.exit(143);
+  });
+}
+
 /**
  * Copy a SQLite database (with its journal) to a private temp dir so the
  * browser's own file is never opened or locked by us.
@@ -201,16 +220,19 @@ function withCopy(dbPath) {
       }
     }
   }
+  const cleanupFn = () => {
+    activeCookieCleanups.delete(cleanupFn);
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best effort.
+    }
+  };
+  activeCookieCleanups.add(cleanupFn);
   return {
     dir,
     db: target,
-    cleanup: () => {
-      try {
-        rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // Best effort.
-      }
-    },
+    cleanup: cleanupFn,
   };
 }
 
@@ -225,7 +247,11 @@ export function readFirefoxCookies(dbPath, query) {
   const copy = withCopy(dbPath);
   let database;
   try {
-    database = new DatabaseSync(copy.db, { readOnly: true });
+    try {
+      database = new DatabaseSync(copy.db, { readOnly: true });
+    } catch {
+      database = new DatabaseSync(copy.db);
+    }
     const sql = query.name
       ? "select host, name, value, path from moz_cookies where host like ? and name = ?"
       : "select host, name, value, path from moz_cookies where host like ?";

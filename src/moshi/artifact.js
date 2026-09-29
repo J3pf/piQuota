@@ -7,7 +7,7 @@
  * window labels, reset timestamps and plan names.
  */
 
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -80,6 +80,11 @@ export function writeArtifact(artifact, path) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, JSON.stringify(artifact, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+    try {
+      chmodSync(temporary, 0o600);
+    } catch {
+      // Best-effort in environments without chmod.
+    }
     renameSync(temporary, path);
     return { ok: true, path };
   } catch (error) {

@@ -152,6 +152,19 @@ test("redact removes credentials and e-mails from any leaked text", () => {
   assert.equal(cleaned.includes("user@example.com"), false);
   assert.equal(cleaned.includes("abcdef"), false);
   assert.equal(cleaned.includes("<email>"), true);
+
+  const cookieText = "Cookie: __Host-console_session=s%3Asecret123; auth=secret456; other=ok";
+  const cleanedCookies = redact(cookieText);
+  assert.equal(cleanedCookies.includes("secret123"), false);
+  assert.equal(cleanedCookies.includes("secret456"), false);
+  assert.equal(cleanedCookies.includes("__Host-console_session=<redacted>"), true);
+  assert.equal(cleanedCookies.includes("auth=<redacted>"), true);
+  assert.equal(cleanedCookies.includes("other=ok"), true);
+
+  const bearerText = "Authorization: Bearer my-secret-token-12345";
+  const cleanedBearer = redact(bearerText);
+  assert.equal(cleanedBearer.includes("my-secret-token-12345"), false);
+  assert.equal(cleanedBearer.includes("Bearer <redacted>"), true);
 });
 
 test("a throttled family is paused instead of hammered, and recovers", async () => {

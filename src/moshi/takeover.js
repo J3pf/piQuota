@@ -11,7 +11,7 @@
  * editing its config file, so its comments and unknown keys stay intact.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -80,6 +80,11 @@ export function writeTakeover(options = {}) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, JSON.stringify(body, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+    try {
+      chmodSync(temporary, 0o600);
+    } catch {
+      // Best-effort in environments without chmod.
+    }
     renameSync(temporary, path);
     return { ok: true, path };
   } catch (error) {

@@ -76,9 +76,38 @@ export function extractWorkspaceIds(urls) {
  * @param {{ urlLike: string, limit?: number }} query
  * @returns {string[]}
  */
+const activeHistoryCleanups = new Set();
+if (typeof process !== "undefined" && typeof process.on === "function") {
+  const runCleanups = () => {
+    for (const fn of activeHistoryCleanups) {
+      try { fn(); } catch {}
+    }
+    activeHistoryCleanups.clear();
+  };
+  process.once("exit", runCleanups);
+  process.once("SIGINT", () => {
+    runCleanups();
+    process.exit(130);
+  });
+  process.once("SIGTERM", () => {
+    runCleanups();
+    process.exit(143);
+  });
+}
+
 export function readVisitedUrls(dbPath, query) {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-history-"));
   const target = join(dir, "places.sqlite");
+  const cleanupFn = () => {
+    activeHistoryCleanups.delete(cleanupFn);
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best effort.
+    }
+  };
+  activeHistoryCleanups.add(cleanupFn);
+
   try {
     for (const suffix of ["", "-wal", "-shm"]) {
       const source = `${dbPath}${suffix}`;
@@ -90,7 +119,12 @@ export function readVisitedUrls(dbPath, query) {
         }
       }
     }
-    const database = new DatabaseSync(target, { readOnly: true });
+    let database;
+    try {
+      database = new DatabaseSync(target, { readOnly: true });
+    } catch {
+      database = new DatabaseSync(target);
+    }
     try {
       const rows = database
         .prepare("select url from moz_places where url like ? order by last_visit_date desc limit ?")
@@ -106,11 +140,7 @@ export function readVisitedUrls(dbPath, query) {
   } catch {
     return [];
   } finally {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // Best effort.
-    }
+    cleanupFn();
   }
 }
 

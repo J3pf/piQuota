@@ -174,6 +174,8 @@ export async function collectQuota(options = {}) {
       `claude: removed abandoned OAuth refresh lock (${Math.round((claude.recoveredLock.ageMs ?? 0) / 1000)}s old) at ${claude.recoveredLock.lockPath}`,
     );
   }
+  /** @type {Record<string, string[]>} */
+  const familyWarnings = {};
 
   await Promise.all(
     families.map(async (family) => {
@@ -229,10 +231,11 @@ export async function collectQuota(options = {}) {
 
       /** @type {import("./model.js").QuotaResult[]} */
       const results = [];
+      const familyWarnList = [];
       for (const credential of credentials) {
         const freshness = checkFreshness(credential, now);
         if (!freshness.fresh) {
-          warnings.push(
+          familyWarnList.push(
             `${family}: the ${expiredTokenName(credential)} expired ${Math.abs(freshness.expiresInMin ?? 0)}m ago; ${refreshHint(credential)}`,
           );
         }
@@ -256,7 +259,7 @@ export async function collectQuota(options = {}) {
               env,
               home: options.home,
             }).seconds;
-            warnings.push(`${family}: throttled upstream; pausing that family for ${seconds}s`);
+            familyWarnList.push(`${family}: throttled upstream; pausing that family for ${seconds}s`);
           } else if (result.ok || isAuthFailure(result.error)) {
             clearBackoff(family, { env, home: options.home });
           }
@@ -277,8 +280,15 @@ export async function collectQuota(options = {}) {
         }
       }
       byFamily[family] = results;
+      familyWarnings[family] = familyWarnList;
     }),
   );
+
+  for (const family of families) {
+    if (familyWarnings[family]) {
+      warnings.push(...familyWarnings[family]);
+    }
+  }
 
   const providers = families.flatMap((family) => byFamily[family] ?? []);
 

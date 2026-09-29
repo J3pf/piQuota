@@ -581,36 +581,42 @@ async function moshiWatch(argv, report, options = {}) {
 
   let last = loadLastPublished({});
   for (;;) {
-    const setting = effectiveUsageCollection({});
-    if (!setting.enabled) {
-      out(`usage-collection is off in ${setting.path}; pausing`);
-    } else {
-      const fetched = await collectWithCadence({
-        families: FAMILIES,
-        ttls,
-        loader: (families) => collectQuota({ families, refresh: options.refresh }),
-      });
-      const carried = mergeSticky(last, fetched.report);
-      const final = mergeLastGood(carried.report);
-      last = final.report;
-
-      const result = await moshiPush(final.report, { agentMode: options.agentMode, quiet: true, alreadyMerged: true });
-      const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
-      const carriedNames = [...carried.reused, ...final.restored];
-      const notes = [];
-      if (fetched.fetched.length > 0) notes.push(`refreshed ${fetched.fetched.join(", ")}`);
-      if (carriedNames.length > 0) notes.push(`kept last values for ${carriedNames.join(", ")}`);
-      const note = notes.length > 0 ? ` (${notes.join("; ")})` : "";
-
-      if (result === 0) {
-        // What matters is how many cards the host accepted, not how many providers
-        // happened to be healthy: a cycle where the sticky layer restored three of
-        // four still published four, and the old message reported "1".
-        const pushed = buildUsagePayload(final.report, { agentMode: options.agentMode }).snapshots.length;
-        out(`${stamp} published ${pushed} card(s)${note}`);
+    try {
+      const setting = effectiveUsageCollection({});
+      if (!setting.enabled) {
+        out(`usage-collection is off in ${setting.path}; pausing`);
       } else {
-        out(`${stamp} push failed${note}`);
+        const fetched = await collectWithCadence({
+          families: FAMILIES,
+          ttls,
+          loader: (families) => collectQuota({ families, refresh: options.refresh }),
+        });
+        const carried = mergeSticky(last, fetched.report);
+        const final = mergeLastGood(carried.report);
+        last = final.report;
+
+        const result = await moshiPush(final.report, { agentMode: options.agentMode, quiet: true, alreadyMerged: true });
+        const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+        const carriedNames = [...carried.reused, ...final.restored];
+        const notes = [];
+        if (fetched.fetched.length > 0) notes.push(`refreshed ${fetched.fetched.join(", ")}`);
+        if (carriedNames.length > 0) notes.push(`kept last values for ${carriedNames.join(", ")}`);
+        const note = notes.length > 0 ? ` (${notes.join("; ")})` : "";
+
+        if (result === 0) {
+          // What matters is how many cards the host accepted, not how many providers
+          // happened to be healthy: a cycle where the sticky layer restored three of
+          // four still published four, and the old message reported "1".
+          const pushed = buildUsagePayload(final.report, { agentMode: options.agentMode }).snapshots.length;
+          out(`${stamp} published ${pushed} card(s)${note}`);
+        } else {
+          out(`${stamp} push failed${note}`);
+        }
       }
+    } catch (error) {
+      const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[${stamp}] watch iteration failed: ${message}\n`);
     }
     await sleep(intervalSec);
   }

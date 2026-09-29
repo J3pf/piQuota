@@ -10,7 +10,7 @@
  *   3. a local browser's cookie store, read read-only (see src/browser/cookies.js).
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -61,8 +61,14 @@ function readTrimmed(path) {
 export function writeSecretFile(path, value) {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, value.trim() + "\n", { encoding: "utf-8", mode: 0o600 });
-    chmodSync(path, 0o600);
+    const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(temporary, value.trim() + "\n", { encoding: "utf-8", mode: 0o600 });
+    try {
+      chmodSync(temporary, 0o600);
+    } catch {
+      // Best-effort in environments without chmod.
+    }
+    renameSync(temporary, path);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: /** @type {{ message?: string }} */ (error)?.message ?? String(error) };
