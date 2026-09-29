@@ -37,6 +37,10 @@ export function openLogin(url) {
     const result = spawnSync(candidate, [url], { stdio: "ignore", detached: true });
     if (!result.error) return { launched: true, via: `Windows Firefox (${candidate})` };
   }
+  if (process.platform === "darwin" || existsSync("/Applications/Firefox.app")) {
+    const launched = spawnSync("open", ["-a", "Firefox", url], { stdio: "ignore", detached: true });
+    if (!launched.error && launched.status === 0) return { launched: true, via: "macOS Firefox (open -a Firefox)" };
+  }
   for (const command of ["firefox", "firefox-esr", "firefox-bin"]) {
     const result = spawnSync("which", [command], { encoding: "utf-8" });
     if (result.status !== 0) continue;

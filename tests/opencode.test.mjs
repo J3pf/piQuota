@@ -179,6 +179,24 @@ test("firefox roots on native Windows include %APPDATA%\\Mozilla\\Firefox", () =
   assert.equal(stores[0].path, join(profileDir, "cookies.sqlite"));
 });
 
+test("macOS Firefox profile discovery resolves ~/Library/Application Support/Firefox", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-mac-"));
+  const macRoot = join(home, "Library", "Application Support", "Firefox");
+  const profileDir = join(macRoot, "Profiles", "mac.default");
+  mkdirSync(profileDir, { recursive: true });
+  writeFileSync(
+    join(macRoot, "profiles.ini"),
+    "[Profile0]\nName=default\nIsRelative=1\nPath=Profiles/mac.default\nDefault=1\n",
+  );
+  writeFileSync(join(profileDir, "cookies.sqlite"), "");
+
+  const stores = discoverCookieStores({ home, platform: "darwin" });
+  assert.equal(stores.length, 1);
+  assert.equal(stores[0].browser, "firefox");
+  assert.equal(stores[0].profile, "mac:Profile0 (default)");
+  assert.equal(stores[0].path, join(profileDir, "cookies.sqlite"));
+});
+
 test("the Firefox reader works on a copied database and is read-only", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-ff-"));
   const db = join(dir, "cookies.sqlite");

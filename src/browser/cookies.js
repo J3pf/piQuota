@@ -46,10 +46,13 @@ export function firefoxRoots(options = {}) {
     // Windows keeps profiles under %APPDATA%\Mozilla\Firefox, not ~/.mozilla/firefox.
     const appData = options.appData ?? env.APPDATA ?? join(home, "AppData", "Roaming");
     roots.push(join(appData, "Mozilla", "Firefox"));
+  } else if (platform === "darwin") {
+    roots.push(join(home, "Library", "Application Support", "Firefox"));
   } else {
     roots.push(
       join(home, ".mozilla", "firefox"),
       join(home, ".config", "mozilla", "firefox"),
+      join(home, "Library", "Application Support", "Firefox"),
     );
     if (env.XDG_CONFIG_HOME) {
       roots.push(join(env.XDG_CONFIG_HOME, "mozilla", "firefox"));
@@ -127,10 +130,15 @@ export function discoverCookieStores(options = {}) {
   const stores = [];
   for (const root of firefoxRoots(options)) {
     for (const profile of parseFirefoxProfiles(root)) {
+      const platformPrefix = root.includes("Application Support")
+        ? "mac"
+        : root.endsWith("Firefox")
+          ? "windows"
+          : "linux";
       stores.push({
         browser: "firefox",
         path: join(profile.dir, "cookies.sqlite"),
-        profile: `${root.endsWith("Firefox") ? "windows" : "linux"}:${profile.label}${profile.isDefault ? " (default)" : ""}`,
+        profile: `${platformPrefix}:${profile.label}${profile.isDefault ? " (default)" : ""}`,
         readability: "plaintext",
       });
     }

@@ -29,7 +29,12 @@ export function discoverHistoryStores(options = {}) {
     for (const profile of parseFirefoxProfiles(root)) {
       const path = join(profile.dir, "places.sqlite");
       if (!existsSync(path)) continue;
-      stores.push({ profile: `${root.endsWith("Firefox") ? "windows" : "linux"}:${profile.label}`, path });
+      const platformPrefix = root.includes("Application Support")
+        ? "mac"
+        : root.endsWith("Firefox")
+          ? "windows"
+          : "linux";
+      stores.push({ profile: `${platformPrefix}:${profile.label}`, path });
     }
   }
   return stores;
