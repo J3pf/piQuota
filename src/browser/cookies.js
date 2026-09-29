@@ -38,7 +38,13 @@ const WINDOWS_USERS_ROOT = "/mnt/c/Users";
 export function firefoxRoots(options = {}) {
   const home = options.home ?? homedir();
   const platform = options.platform ?? process.platform;
-  const roots = [join(home, ".mozilla", "firefox")];
+  const roots = [
+    join(home, ".mozilla", "firefox"),
+    join(home, ".config", "mozilla", "firefox"),
+  ];
+  if (process.env.XDG_CONFIG_HOME) {
+    roots.push(join(process.env.XDG_CONFIG_HOME, "mozilla", "firefox"));
+  }
   if (platform === "win32") {
     // Windows keeps profiles under %APPDATA%\Mozilla\Firefox, not ~/.mozilla/firefox.
     const appData = options.appData ?? process.env.APPDATA ?? join(home, "AppData", "Roaming");

@@ -4,6 +4,7 @@ node_modules/
 # Runtime & cache states
 .atl/
 .cache/
+.codegraph/
 .pi/
 *.tmp
 *.log

@@ -42,7 +42,7 @@ import { describeClaudeCodeSource } from "../src/auth/claude-code-auth.js";
 import { loadLastPublished, mergeLastGood, mergeSticky, saveLastPublished } from "../src/moshi/sticky.js";
 import { applyRailPatch, inspectRailPatch, resolveGentlePiLayout, revertRailPatch } from "../src/gentle-pi/rail-patch.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 const OPENCODE_LOGIN_URL = "https://opencode.ai/auth";
 const WINDOWS_FIREFOX = [
   "/mnt/c/Program Files/Mozilla Firefox/firefox.exe",

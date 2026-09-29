@@ -573,7 +573,8 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       return null;
     }
     try {
-      const result = await pi.exec(process.execPath, [cli, ...args], { timeout: EXEC_TIMEOUT_MS });
+      const runner = /node(\.exe)?$/i.test(process.execPath) ? process.execPath : "node";
+      const result = await pi.exec(runner, [cli, ...args], { timeout: EXEC_TIMEOUT_MS });
       if (!result.stdout || result.stdout.trim() === "") {
         lastError = result.stderr?.trim() || "piquota produced no output";
         return null;
