@@ -252,18 +252,19 @@ test("the rail slot is patched in at session start and then owns the card", asyn
   });
 });
 
-test("a patched rail that is not active keeps the above-editor box", async () => {
+test("a patched rail that is not active collapses to the compact line", async () => {
   await withRailFixtures(async () => {
     const module = await import(EXTENSION);
     const harness = makeHarness();
     module.default(harness.pi);
     await startSession(harness);
 
-    // Narrow terminals and regular mode never render the rail, so a static decision
-    // would leave the quota invisible instead of falling back to the box.
+    // Narrow terminals and regular mode never render the rail. When the rail is inactive,
+    // it collapses to a single compact line above the editor like gentle-pi's other components do.
     const state = { active: false, ownsHost: () => true, parts: new Map() };
     const lines = renderWidget(harness.widgets.at(-1), harness.ctx.ui.theme, 100, { terminal: { [SIDEBAR_STATE]: state } });
-    assert.match(plain(lines.join("\n")), /Claude:\s+○\s+4%/);
+    assert.equal(lines.length, 1, "inactive rail must collapse to a single line above the editor");
+    assert.match(plain(lines[0]), /Claude:○\s+4%/);
   });
 });
 

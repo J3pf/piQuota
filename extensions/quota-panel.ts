@@ -522,6 +522,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   /** The compact box is the default surface: its own row, nothing competes for it. */
   let lineVisible = true;
   let boxVisible = true;
+  let explicitBox = false;
   /** gentle-pi owns the footer and truncates it from the end, so start off. */
   let statusVisible = false;
   let lastError: string | null = null;
@@ -640,6 +641,15 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
             // would show the same numbers twice.
             if (state?.active && state?.ownsHost?.()) return [];
             if (!report) return [activeTheme.fg("dim", "quota …")];
+            // When gentle-pi is present and the sidebar is inactive (narrow screen / breakpoint < 140),
+            // or when the terminal is narrow (< 100), collapse to a single line like gentle-pi's other
+            // components do, unless the user explicitly requested the box with `/quota box`.
+            if (((railMode && state !== undefined) || (state && !state.active)) && !explicitBox) {
+              return [renderLine(report, activeTheme)];
+            }
+            if (w < 100 && !explicitBox) {
+              return [renderLine(report, activeTheme)];
+            }
             if (boxVisible) return renderBox(report, activeTheme, w);
             if (lineVisible) return [renderLine(report, activeTheme)];
             return [];
@@ -716,6 +726,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       case "widget":
         lineVisible = true;
         boxVisible = false;
+        explicitBox = false;
         panelVisible = false;
         if (!report) await refresh(ctx, false);
         paintUi(ctx);
@@ -725,6 +736,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
         panelVisible = true;
         lineVisible = false;
         boxVisible = false;
+        explicitBox = false;
         if (!report) await refresh(ctx, false);
         paintUi(ctx);
         ctx.ui.notify("Quota panel shown above the editor", "info");
@@ -732,6 +744,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       case "box":
         lineVisible = true;
         boxVisible = true;
+        explicitBox = true;
         panelVisible = false;
         if (!report) await refresh(ctx, false);
         paintUi(ctx);
@@ -742,6 +755,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
         panelVisible = false;
         lineVisible = false;
         boxVisible = false;
+        explicitBox = false;
         paintUi(ctx);
         ctx.ui.notify("Quota line hidden", "info");
         return;
