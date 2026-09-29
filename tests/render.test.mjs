@@ -16,7 +16,7 @@ import {
   renderStatusLine,
   visibleLength,
 } from "../src/render/panel.js";
-import { humanDuration, humanReset } from "../src/model.js";
+import { buildWindow, clampPercent, humanDuration, humanReset, parseReset } from "../src/model.js";
 
 /** @param {Partial<import("../src/model.js").QuotaWindow>} overrides */
 function windowFixture(overrides = {}) {
@@ -272,4 +272,26 @@ test("the box widget borders and content align to the exact same visible width",
   for (let i = 1; i < lengths.length; i++) {
     assert.equal(lengths[i], lengths[0], `line ${i} width matches top border width`);
   }
+});
+
+test("model defensive parsing: booleans, arrays, reset seconds, and phantom quota guards", () => {
+  assert.equal(clampPercent(true), null);
+  assert.equal(clampPercent(false), null);
+  assert.equal(clampPercent([]), null);
+  assert.equal(clampPercent([50]), null);
+  assert.equal(clampPercent("85"), 85);
+
+  const now = 1_800_000_000_000;
+  const resetFromString = parseReset("1800", now);
+  assert.equal(resetFromString.resetsInSec, 1800);
+  assert.equal(resetFromString.resetsAt, new Date(now + 1800 * 1000).toISOString());
+
+  const resetFromNum = parseReset(3600, now);
+  assert.equal(resetFromNum.resetsInSec, 3600);
+
+  const windowWithInvalidRemaining = buildWindow({ id: "test", label: "Test", remainingPercent: "not-a-number", now });
+  assert.equal(windowWithInvalidRemaining.usedPercent, null);
+  assert.equal(windowWithInvalidRemaining.remainingPercent, null);
+
+  assert.equal(humanDuration(45.8), "46s");
 });

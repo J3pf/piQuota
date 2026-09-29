@@ -75,12 +75,23 @@ export async function requestJson(url, options = {}) {
     }
 
     if (response.status === 429) {
-      const retryAfter = response.headers?.get?.("retry-after");
+      const rawHeader = response.headers?.get?.("retry-after")?.trim();
+      let retrySec = null;
+      if (rawHeader) {
+        if (/^\d+$/.test(rawHeader)) {
+          retrySec = Number(rawHeader);
+        } else {
+          const parsed = Date.parse(rawHeader);
+          if (!Number.isNaN(parsed)) {
+            retrySec = Math.max(0, Math.round((parsed - Date.now()) / 1000));
+          }
+        }
+      }
       return {
         ok: false,
         status: 429,
-        error: retryAfter
-          ? `rate limited (HTTP 429); retry in ${retryAfter}s`
+        error: retrySec !== null
+          ? `rate limited (HTTP 429); retry in ${retrySec}s`
           : "rate limited (HTTP 429); retry in a minute",
       };
     }
@@ -118,10 +129,15 @@ export async function requestJson(url, options = {}) {
   } catch (error) {
     const name = /** @type {{ name?: string, message?: string }} */ (error)?.name;
     const message = /** @type {{ message?: string }} */ (error)?.message ?? String(error);
+    const cause = /** @type {{ cause?: { code?: string, message?: string } }} */ (error)?.cause;
+    const causeCode = cause?.code ?? cause?.message;
+    const detail = causeCode && typeof causeCode === "string" && !message.includes(causeCode)
+      ? `${message}: ${causeCode}`
+      : message;
     return {
       ok: false,
       status: 0,
-      error: name === "AbortError" ? `timed out after ${timeoutMs}ms` : redact(message),
+      error: name === "AbortError" ? `timed out after ${timeoutMs}ms` : redact(detail),
     };
   } finally {
     clearTimeout(timeout);

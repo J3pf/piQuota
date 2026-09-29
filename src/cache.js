@@ -101,6 +101,17 @@ export function readCache(options = {}) {
   const ageMs = now - savedAt;
   if (ageMs > ttlMs) return null;
 
+  for (const provider of report.providers) {
+    for (const win of provider.windows ?? []) {
+      if (win.resetsAt) {
+        const parsedMs = Date.parse(win.resetsAt);
+        if (!Number.isNaN(parsedMs)) {
+          win.resetsInSec = Math.max(0, Math.round((parsedMs - now) / 1000));
+        }
+      }
+    }
+  }
+
   return { report, ageMs, path };
 }
 

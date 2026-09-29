@@ -147,7 +147,21 @@ export function mergeReports(parts, options = {}) {
     }
   }
 
-  const ordered = families.map((family) => byFamily.get(family)).filter((provider) => provider !== undefined);
+  const ordered = families
+    .map((family) => byFamily.get(family))
+    .filter((provider) => provider !== undefined)
+    .map((provider) => {
+      if (!reused.has(provider.family)) return provider;
+      return {
+        ...provider,
+        windows: (provider.windows ?? []).map((win) => {
+          if (!win.resetsAt) return win;
+          const parsedMs = Date.parse(win.resetsAt);
+          if (Number.isNaN(parsedMs)) return win;
+          return { ...win, resetsInSec: Math.max(0, Math.round((parsedMs - now) / 1000)) };
+        }),
+      };
+    });
 
   /** @type {string[]} */
   const sources = [];

@@ -43,8 +43,9 @@
  * @returns {number | null}
  */
 export function clampPercent(value) {
-  if (value === null || value === undefined || value === "") return null;
-  const number = typeof value === "number" ? value : Number(value);
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && value.trim() === "") return null;
+  const number = Number(value);
   if (!Number.isFinite(number)) return null;
   return Math.min(100, Math.max(0, number));
 }
@@ -54,7 +55,8 @@ export function clampPercent(value) {
  * @returns {number | null}
  */
 export function finiteNumber(value) {
-  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && value.trim() === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -84,12 +86,24 @@ const SECONDS_EPOCH_CEILING = 1e11;
  */
 export function parseReset(value, now = Date.now()) {
   const numeric = finiteNumber(value);
-  if (numeric !== null && numeric > 1e9) {
-    const ms = numeric > SECONDS_EPOCH_CEILING ? numeric : numeric * 1000;
-    return { resetsAt: new Date(ms).toISOString(), resetsInSec: Math.max(0, Math.round((ms - now) / 1000)) };
+  if (numeric !== null) {
+    if (numeric > 1e9) {
+      const ms = numeric > SECONDS_EPOCH_CEILING ? numeric : numeric * 1000;
+      return { resetsAt: new Date(ms).toISOString(), resetsInSec: Math.max(0, Math.round((ms - now) / 1000)) };
+    }
+    if (numeric >= 0) {
+      return parseResetSeconds(numeric, now);
+    }
+    return { resetsAt: null, resetsInSec: null };
   }
   const text = stringValue(value);
   if (text) {
+    if (/^\d+(\.\d+)?$/.test(text)) {
+      const num = Number(text);
+      if (num >= 0 && num <= 1e9) {
+        return parseResetSeconds(num, now);
+      }
+    }
     const parsed = Date.parse(text);
     if (!Number.isNaN(parsed)) {
       return { resetsAt: new Date(parsed).toISOString(), resetsInSec: Math.max(0, Math.round((parsed - now) / 1000)) };
@@ -130,12 +144,13 @@ export function parseResetSeconds(seconds, now = Date.now()) {
  */
 export function buildWindow(input) {
   const now = input.now ?? Date.now();
-  const used = clampPercent(
-    input.usedPercent ?? (input.remainingPercent === undefined || input.remainingPercent === null
-      ? null
-      : 100 - (clampPercent(input.remainingPercent) ?? 0)),
-  );
-  const remaining = clampPercent(input.remainingPercent ?? (used === null ? null : 100 - used));
+  let used = clampPercent(input.usedPercent);
+  let remaining = clampPercent(input.remainingPercent);
+  if (used === null && remaining !== null) {
+    used = 100 - remaining;
+  } else if (remaining === null && used !== null) {
+    remaining = 100 - used;
+  }
 
   let resets = { resetsAt: null, resetsInSec: null };
   if (input.resetsAt !== undefined && input.resetsAt !== null) {

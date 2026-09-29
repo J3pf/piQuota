@@ -224,7 +224,7 @@ export function applyRailPatch({ layoutPath }) {
   const verified = inspectRailPatch({ layoutPath });
   if (verified.state !== "patched") {
     try {
-      copyFileSync(backupPath, layoutPath);
+      writeAtomically(layoutPath, readFileSync(backupPath, "utf-8"));
     } catch {
       // The restore is best effort; the report below is the authoritative outcome.
     }

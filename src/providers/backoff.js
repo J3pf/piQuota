@@ -11,7 +11,7 @@
  * layer then republishes the previous good snapshot, so the card survives.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -51,8 +51,13 @@ function writeBackoff(state, options = {}) {
   const path = resolveBackoffPath(options);
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = `${path}.${process.pid}.tmp`;
+    const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(temporary, JSON.stringify(state, null, 2), { encoding: "utf-8", mode: 0o600 });
+    try {
+      chmodSync(temporary, 0o600);
+    } catch {
+      // Best-effort in environments where chmod is not supported.
+    }
     renameSync(temporary, path);
     return true;
   } catch {

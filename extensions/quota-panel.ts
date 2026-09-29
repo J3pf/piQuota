@@ -199,13 +199,14 @@ function bar(usedPercent: number | null, width = 10): string {
 function humanDuration(seconds: number | null): string {
   if (seconds === null || !Number.isFinite(seconds)) return "unknown";
   if (seconds <= 0) return "now";
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
+  const total = Math.round(seconds);
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m`;
-  return `${seconds}s`;
+  return `${total}s`;
 }
 
 type ErrorKind = "transient" | "throttle" | "expired" | "auth" | "missing" | "unknown";

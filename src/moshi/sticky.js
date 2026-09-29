@@ -96,6 +96,12 @@ export function mergeSticky(previous, next, options = {}) {
       ...item,
       account: item.account,
       updatedAt: item.updatedAt,
+      windows: (item.windows ?? []).map((win) => {
+        if (!win.resetsAt) return win;
+        const parsedMs = Date.parse(win.resetsAt);
+        if (Number.isNaN(parsedMs)) return win;
+        return { ...win, resetsInSec: Math.max(0, Math.round((parsedMs - now) / 1000)) };
+      }),
     }));
     byFamily[family] = carriedList;
     if (carriedList[0]) replacements.set(family, carriedList[0]);
@@ -298,6 +304,12 @@ export function mergeLastGood(report, options = {}) {
       ...item,
       error: null,
       note: `last known values, ${ageMinutes} min old (upstream temporarily unavailable)`,
+      windows: (item.windows ?? []).map((win) => {
+        if (!win.resetsAt) return win;
+        const parsedMs = Date.parse(win.resetsAt);
+        if (Number.isNaN(parsedMs)) return win;
+        return { ...win, resetsInSec: Math.max(0, Math.round((parsedMs - now) / 1000)) };
+      }),
     }));
     restored.push(family);
     warnings.push(

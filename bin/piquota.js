@@ -18,7 +18,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -645,7 +645,7 @@ After=moshi-hook.service
 
 [Service]
 Type=simple
-ExecStart=${process.execPath} ${cli} moshi watch --interval 30 --fetch-ttl 60
+ExecStart="${process.execPath}" "${cli}" moshi watch --interval 30 --fetch-ttl 60
 Restart=always
 RestartSec=15
 
@@ -681,7 +681,11 @@ WantedBy=default.target
 
   if (action === "uninstall") {
     spawnSync("systemctl", ["--user", "disable", "--now", SERVICE_NAME], { stdio: "inherit" });
-    spawnSync("rm", ["-f", unitPath]);
+    try {
+      rmSync(unitPath, { force: true });
+    } catch {
+      // Best-effort removal.
+    }
     spawnSync("systemctl", ["--user", "daemon-reload"], { stdio: "inherit" });
     out(`removed ${unitPath}`);
     return 0;
