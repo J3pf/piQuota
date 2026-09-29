@@ -397,7 +397,7 @@ keeps the card showing its last real reading instead of going blank. A *permanen
 failure (expired sign-in, missing credential) is never masked.
 
 `piquota moshi service install` runs `moshi watch` as a systemd **user** service
-(`pi-quota-moshi.service`). Full protocol notes, including how the endpoint and
+(`pi-quota-moshi.service`) on Linux and WSL2. On macOS (which uses `launchd` instead of `systemd`), run `piquota moshi watch &` in the background (or inside tmux/zellij, or via a LaunchAgent plist). Full protocol notes, including how the endpoint and
 schema were recovered: [docs/MOSHI.md](docs/MOSHI.md).
 
 ## Layout
