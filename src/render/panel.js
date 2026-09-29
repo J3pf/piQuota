@@ -252,9 +252,14 @@ export function renderBoxWidget(providers, paint, totalWidth = typeof process?.s
       const key = thresholdKey(rem);
       mid = `${paint(key, ringGlyph(rem))} ${paint(key, `${Math.round(used)}%`.padStart(4))}`;
     }
+    const effectiveResetsInSec =
+      window?.resetsInSec ??
+      (used === 0 && typeof window?.windowSeconds === "number" && window.windowSeconds > 0
+        ? window.windowSeconds
+        : null);
     return {
       left: `${name} ${mid}`,
-      right: paint("dim", `R:${humanDuration(window?.resetsInSec ?? null)}`),
+      right: paint("dim", `R:${humanDuration(effectiveResetsInSec)}`),
     };
   });
   const innerWidth = Math.max(25, ...content.map(({ left, right }) => visibleLength(left) + (right ? 2 + visibleLength(right) : 0)));
