@@ -40,7 +40,7 @@ const RAIL_KEY = "quota";
 // it. Every read is guarded: when the rail slot was never patched in, nothing here
 // runs and the box stays the only surface.
 const SIDEBAR_STATE_KEY = Symbol.for("gentle-pi.experimental-sidebar.state");
-const REFRESH_MS = 120_000;
+const REFRESH_MS = Number(process.env.PI_QUOTA_REFRESH_MS) || 300_000;
 const AGENT_END_DEBOUNCE_MS = 1_500;
 const EXEC_TIMEOUT_MS = 30_000;
 
