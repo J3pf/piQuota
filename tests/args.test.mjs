@@ -42,7 +42,7 @@ test("a non-numeric value for an own flag is reported, never silently dropped", 
 });
 
 test("subcommand value flags stay out of both positionals and unknown", () => {
-  const watch = parseArgs(["moshi", "watch", "--interval", "30", "--fetch-ttl", "300"]);
+  const watch = parseArgs(["moshi", "watch", "--interval", "30", "--fetch-ttl", "300", "--claude-ttl", "180"]);
   assert.deepEqual(watch.positionals, ["moshi", "watch"]);
   assert.deepEqual(watch.unknown, [], "a subcommand flag is not a typo");
 });

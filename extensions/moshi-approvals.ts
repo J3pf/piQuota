@@ -109,6 +109,18 @@ function firstString(...values: unknown[]): string {
   return "";
 }
 
+function redact(value: unknown): string {
+  let text = typeof value === "string" ? value : String(value ?? "");
+  text = text.replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "<email>");
+  text = text.replace(/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{4,}\b/g, "<jwt>");
+  text = text.replace(/\b(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/g, "$1<redacted>");
+  text = text.replace(/\b(ya29\.)[A-Za-z0-9_-]+/g, "$1<redacted>");
+  text = text.replace(/\b(1\/\/)[A-Za-z0-9_-]+/g, "$1<redacted>");
+  text = text.replace(/\b(rt\.[\w.]{4})[A-Za-z0-9_-]+/g, "$1<redacted>");
+  text = text.replace(/(?:key|token|secret|password|auth|cookie|bearer)\s*[:=]\s*([^\s;,&]+)/gi, "$1=<redacted>");
+  return text;
+}
+
 function runForOutput(command: string, args: string[], timeout: number): string {
   try {
     const result = spawnSync(command, args, { encoding: "utf8", timeout, windowsHide: true });
@@ -334,7 +346,7 @@ export default function moshiApprovals(pi: ExtensionAPI): void {
             // screen, which it does about one time in eight. The card never promises
             // more than that.
             subtitle: "Answer in terminal",
-            message: firstString(payload.message).trim().replace(/\s+/g, " ").slice(0, 256),
+            message: redact(firstString(payload.message)).trim().replace(/\s+/g, " ").slice(0, 256),
           }),
         );
         return;

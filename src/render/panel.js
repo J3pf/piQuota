@@ -259,7 +259,7 @@ export function renderBoxWidget(providers, paint, totalWidth = typeof process?.s
   });
   const innerWidth = Math.max(25, ...content.map(({ left, right }) => visibleLength(left) + (right ? 2 + visibleLength(right) : 0)));
   const box = [
-    paint("accent", `╭─ Quota ${"─".repeat(Math.max(0, innerWidth - 7))}╮`),
+    paint("accent", `╭─ Quota ${"─".repeat(Math.max(0, innerWidth - 6))}╮`),
     ...content.map(({ left, right }) => {
       const padding = right
         ? " ".repeat(Math.max(1, innerWidth - visibleLength(left) - visibleLength(right)))

@@ -6,11 +6,35 @@
  * display identity the renderers already print.
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export const DEFAULT_TTL_MS = 60_000;
+
+/**
+ * Merge a partial report into an existing cached report so partial family queries
+ * do not clobber other cached providers.
+ *
+ * @param {import("./engine.js").PiQuotaReport | null | undefined} existingReport
+ * @param {import("./engine.js").PiQuotaReport} newReport
+ * @returns {import("./engine.js").PiQuotaReport}
+ */
+export function mergeReportIntoCache(existingReport, newReport) {
+  if (!existingReport || !existingReport.byFamily) return newReport;
+  const mergedByFamily = { ...existingReport.byFamily, ...newReport.byFamily };
+  const existingFamilies = Object.keys(existingReport.byFamily);
+  const newFamilies = Object.keys(newReport.byFamily || {});
+  const allFamilies = Array.from(new Set([...existingFamilies, ...newFamilies]));
+  const providers = allFamilies.flatMap((family) => mergedByFamily[family] || []);
+  return {
+    ...existingReport,
+    ...newReport,
+    providers,
+    byFamily: mergedByFamily,
+    warnings: Array.from(new Set([...(existingReport.warnings || []), ...(newReport.warnings || [])])),
+  };
+}
 
 /**
  * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
@@ -19,7 +43,7 @@ export const DEFAULT_TTL_MS = 60_000;
 export function resolveCachePath(options = {}) {
   if (options.path) return options.path;
   const env = options.env ?? process.env;
-  const cacheHome = env.XDG_CACHE_HOME || join(options.home ?? homedir(), ".cache");
+  const cacheHome = options.home ? join(options.home, ".cache") : (env.XDG_CACHE_HOME || join(homedir(), ".cache"));
   return join(cacheHome, "pi-quota", "usage.json");
 }
 
@@ -78,12 +102,24 @@ export function readCache(options = {}) {
 export function writeCache(report, options = {}) {
   const path = options.path ?? resolveCachePath(options);
   const now = options.now ?? Date.now();
-  const payload = JSON.stringify({ savedAt: now, report }, null, 2);
+  let finalReport = report;
+  if (options.merge) {
+    const existing = readCache({ ...options, path, ttlMs: Number.POSITIVE_INFINITY });
+    if (existing?.report) {
+      finalReport = mergeReportIntoCache(existing.report, report);
+    }
+  }
+  const payload = JSON.stringify({ savedAt: now, report: finalReport }, null, 2);
 
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, payload, { encoding: "utf-8", mode: 0o600 });
+    try {
+      chmodSync(temporary, 0o600);
+    } catch {
+      // Best-effort in environments where chmod is not supported.
+    }
     renameSync(temporary, path);
     return { ok: true, path };
   } catch (error) {
@@ -127,6 +163,8 @@ export function describeCache(options = {}) {
  *   now?: number,
  *   force?: boolean,
  *   path?: string,
+ *   families?: string[],
+ *   merge?: boolean,
  *   env?: Record<string, string | undefined>,
  *   home?: string,
  * }} options
@@ -134,11 +172,27 @@ export function describeCache(options = {}) {
  * @returns {Promise<{ report: import("./engine.js").PiQuotaReport, cached: boolean, ageMs: number }>}
  */
 export async function withCache(options, loader) {
+  const requested = options.families;
   if (!options.force) {
     const hit = readCache(options);
-    if (hit) return { report: hit.report, cached: true, ageMs: hit.ageMs };
+    if (hit) {
+      const allPresent = !requested || requested.every((fam) => fam in hit.report.byFamily);
+      if (allPresent) {
+        const filteredReport = requested
+          ? {
+              ...hit.report,
+              providers: hit.report.providers.filter((p) => requested.includes(p.family)),
+              byFamily: Object.fromEntries(
+                Object.entries(hit.report.byFamily).filter(([fam]) => requested.includes(fam)),
+              ),
+            }
+          : hit.report;
+        return { report: filteredReport, cached: true, ageMs: hit.ageMs };
+      }
+    }
   }
   const report = await loader();
-  writeCache(report, options);
+  const isPartial = Array.isArray(requested) && requested.length > 0;
+  writeCache(report, { ...options, merge: isPartial || options.merge });
   return { report, cached: false, ageMs: 0 };
 }

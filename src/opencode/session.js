@@ -185,12 +185,15 @@ async function fetchPage(url, options) {
     return { ok: true, status: response.status, html: await response.text(), redirected: false };
   } catch (error) {
     const name = /** @type {{ name?: string }} */ (error)?.name;
+    const message = /** @type {{ message?: string, cause?: { code?: string } }} */ (error)?.message ?? String(error);
+    const code = /** @type {{ cause?: { code?: string } }} */ (error)?.cause?.code;
+    const detail = code ? `${message} (${code})` : message;
     return {
       ok: false,
       status: 0,
       html: "",
       redirected: false,
-      error: name === "AbortError" ? "request timed out" : "request failed",
+      error: name === "AbortError" ? "request timed out" : `request failed: ${detail}`,
     };
   } finally {
     clearTimeout(timeout);

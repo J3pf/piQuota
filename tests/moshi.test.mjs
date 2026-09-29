@@ -294,7 +294,7 @@ test("a throttled family keeps showing its last known real values", async () => 
   // A snapshot older than the max sticky age (default 30m) is discarded.
   const fourth = mergeLastGood(
     { ...report([throttled]), byFamily: { claude: [throttled] } },
-    { path, now: NOW + 35 * 60_000 },
+    { path, now: NOW + 35 * 60_000, maxAgeMs: 30 * 60_000 },
   );
   assert.deepEqual(fourth.restored, [], "must not restore data older than max sticky age");
   assert.equal(fourth.report.providers[0].ok, false);

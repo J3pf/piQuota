@@ -112,6 +112,26 @@ test("withCache refreshes once and then serves the cached copy", async () => {
   assert.equal(loads, 2);
 });
 
+test("withCache merges a partial family query without poisoning the full cache", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-quota-cache-partial-"));
+  const path = join(directory, "usage.json");
+  const { fetchFn } = fullRoutes();
+
+  const fullReport = await collectQuota({ paths: [FIXTURE], claudeCodePaths: [], now: NOW, fetchFn, env: {}, stores: [], allowBrowser: false });
+  writeCache(fullReport, { path, now: NOW });
+  assert.equal(readCache({ path, now: NOW }).report.providers.length, 4);
+
+  const partial = await withCache(
+    { path, now: NOW + 1000, ttlMs: 60_000, families: ["codex"] },
+    async () => collectQuota({ paths: [FIXTURE], claudeCodePaths: [], families: ["codex"], now: NOW + 1000, fetchFn, env: {}, stores: [], allowBrowser: false }),
+  );
+  assert.deepEqual(partial.report.providers.map((p) => p.family), ["codex"]);
+
+  const cachedFull = readCache({ path, now: NOW + 1000 });
+  assert.equal(cachedFull.report.providers.length, 4);
+  assert.deepEqual(Object.keys(cachedFull.report.byFamily).sort(), ["antigravity", "claude", "codex", "opencode-go"]);
+});
+
 test("the Moshi artifact uses moshi-hook field names and redacts identities", async () => {
   const { fetchFn } = fullRoutes();
   const report = await collectQuota({ paths: [FIXTURE], claudeCodePaths: [], now: NOW, fetchFn, env: {}, stores: [], allowBrowser: false });

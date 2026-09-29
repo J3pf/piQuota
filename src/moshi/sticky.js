@@ -37,7 +37,7 @@ function orderedProviders(report, replacements, byFamily) {
  * act exactly while a provider was throttled — the one case it exists for.
  */
 const TRANSIENT =
-  /HTTP 5\d\d|429|rate limited|throttle|backing off|timed out|timeout|ECONNRESET|socket|network|fetch failed/i;
+  /HTTP 5\d\d|429|rate limited|throttle|backing off|timed out|timeout|ECONNRESET|socket|network|fetch failed|ENOTFOUND|ETIMEDOUT|EPIPE|ECONNREFUSED|aborted|hang up|request failed/i;
 
 /**
  * @param {string | null} error
@@ -91,14 +91,14 @@ export function mergeSticky(previous, next, options = {}) {
     }
 
     reused.push(family);
-    const carried = {
-      ...prior,
-      // Keep the stale data but say how fresh it really is.
-      account: prior.account,
-      updatedAt: prior.updatedAt,
-    };
-    byFamily[family] = [carried];
-    replacements.set(family, carried);
+    const priorList = previous.byFamily[family] || (prior ? [prior] : []);
+    const carriedList = priorList.map((item) => ({
+      ...item,
+      account: item.account,
+      updatedAt: item.updatedAt,
+    }));
+    byFamily[family] = carriedList;
+    if (carriedList[0]) replacements.set(family, carriedList[0]);
   }
 
   // Rebuild in the report's own order so the rings never jump position between
@@ -140,7 +140,7 @@ export const DEFAULT_MAX_STICKY_AGE_MS = 4 * 60 * 60 * 1000;
 export function resolveLastPublishedPath(options = {}) {
   if (options.path) return options.path;
   const env = options.env ?? process.env;
-  const cacheHome = env.XDG_CACHE_HOME || join(options.home ?? homedir(), ".cache");
+  const cacheHome = options.home ? join(options.home, ".cache") : (env.XDG_CACHE_HOME || join(homedir(), ".cache"));
   return join(cacheHome, "pi-quota", "last-published.json");
 }
 
@@ -199,7 +199,7 @@ export function saveLastPublished(report, options = {}) {
 export function resolveLastGoodPath(options = {}) {
   if (options.path) return options.path;
   const env = options.env ?? process.env;
-  const cacheHome = env.XDG_CACHE_HOME || join(options.home ?? homedir(), ".cache");
+  const cacheHome = options.home ? join(options.home, ".cache") : (env.XDG_CACHE_HOME || join(homedir(), ".cache"));
   return join(cacheHome, "pi-quota", "last-good.json");
 }
 
@@ -265,7 +265,7 @@ export function mergeLastGood(report, options = {}) {
   for (const [family, results] of Object.entries(report.byFamily)) {
     const fresh = results[0];
     if (fresh?.ok && fresh.windows.length > 0) {
-      state[family] = { result: fresh, savedAt: now };
+      state[family] = { results, result: fresh, savedAt: now };
       saved.push(family);
       byFamily[family] = results;
       continue;
@@ -293,17 +293,18 @@ export function mergeLastGood(report, options = {}) {
     }
 
     const ageMinutes = Math.max(0, Math.round((now - stored.savedAt) / 60000));
-    const carried = {
-      ...stored.result,
+    const storedList = stored.results || (stored.result ? [stored.result] : []);
+    const carriedList = storedList.map((item) => ({
+      ...item,
       error: null,
       note: `last known values, ${ageMinutes} min old (upstream temporarily unavailable)`,
-    };
+    }));
     restored.push(family);
     warnings.push(
       `${family}: showing the last known values (${ageMinutes} min old) because the upstream call failed transiently`,
     );
-    byFamily[family] = [carried];
-    replacements.set(family, carried);
+    byFamily[family] = carriedList;
+    if (carriedList[0]) replacements.set(family, carriedList[0]);
   }
 
   if (saved.length > 0) writeLastGood(state, options);

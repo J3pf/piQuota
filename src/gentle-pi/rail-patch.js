@@ -116,7 +116,7 @@ function dropPart(inner, part) {
  * @param {string} text
  */
 function writeAtomically(layoutPath, text) {
-  const temp = `${layoutPath}${TEMP_SUFFIX}`;
+  const temp = `${layoutPath}.${process.pid}.${Date.now()}.tmp`;
   try {
     writeFileSync(temp, text, "utf-8");
     renameSync(temp, layoutPath);

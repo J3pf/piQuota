@@ -34,7 +34,7 @@ const VALUE_FLAGS = new Set(["--ttl", "--timeout"]);
  * which is why the unknown-argument check was never wired up: a wrong flag was
  * silently ignored instead of reported.
  */
-const SUBCOMMAND_VALUE_FLAGS = new Set(["--interval", "--fetch-ttl", "--wait"]);
+const SUBCOMMAND_VALUE_FLAGS = new Set(["--interval", "--fetch-ttl", "--claude-ttl", "--wait"]);
 
 /** Boolean flags owned by a subcommand. */
 const SUBCOMMAND_FLAGS = new Set(["--paste", "--no-browser", "--print", "--no-refresh"]);

@@ -9,6 +9,7 @@ import test from "node:test";
 import { bar, plainPalette, ringGlyph, thresholdKey } from "../src/render/theme.js";
 import {
   headlineWindow,
+  renderBoxWidget,
   renderProviderLines,
   renderCompact,
   renderPanel,
@@ -261,4 +262,14 @@ test("the panel names the Claude store that was actually read", () => {
 
   const fromStore = renderProviderLines({ ...base, sourceKind: "pi" }, plainPaint).join("\n");
   assert.equal(fromStore.includes("Claude Code CLI"), false, "Pi's own entry is the unremarkable default");
+});
+
+test("the box widget borders and content align to the exact same visible width", () => {
+  const plainPaint = (key, text) => text;
+  const lines = renderBoxWidget([providerFixture()], plainPaint, 0);
+  const lengths = lines.map(visibleLength);
+  assert.equal(lengths.length > 2, true);
+  for (let i = 1; i < lengths.length; i++) {
+    assert.equal(lengths[i], lengths[0], `line ${i} width matches top border width`);
+  }
 });

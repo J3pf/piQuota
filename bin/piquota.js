@@ -31,7 +31,7 @@ import { describeStore, loadPiCredentials, resolveAuthPaths } from "../src/auth/
 import { redact } from "../src/http.js";
 import { humanReset } from "../src/model.js";
 import { discoverCookieStores, findCookie } from "../src/browser/cookies.js";
-import { OPENCODE_COOKIE_NAMES, configPaths, discoverWorkspaceId, readGoPlan, resolveCookie, writeSecretFile } from "../src/opencode/session.js";
+import { OPENCODE_COOKIE_NAME, OPENCODE_COOKIE_NAMES, configPaths, discoverWorkspaceId, readGoPlan, resolveCookie, writeSecretFile } from "../src/opencode/session.js";
 import { buildUsagePayload, discoverBaseUrl, moshiPaths, pushUsage, readHostCredentials } from "../src/moshi/client.js";
 import { buildArtifact, resolveArtifactPath, writeArtifact } from "../src/moshi/artifact.js";
 import { effectiveUsageCollection, readUsageCollection } from "../src/moshi/settings.js";
@@ -348,7 +348,7 @@ async function verifyGoPlan(options = {}) {
     return 1;
   }
 
-  const workspace = await discoverWorkspaceId({});
+  const workspace = await discoverWorkspaceId({ cookie: cookie.value, stores: options.stores });
   if (!workspace.workspaceId) {
     err(`session found but no workspace id (${workspace.error})`);
     return 1;
@@ -799,7 +799,7 @@ async function main() {
   if (args.noCache) {
     report = await load();
   } else {
-    const result = await withCache({ ttlMs: args.ttlMs, force: args.force }, load);
+    const result = await withCache({ ttlMs: args.ttlMs, force: args.force, families: selected }, load);
     report = result.report;
     cached = result.cached;
     ageMs = result.ageMs;

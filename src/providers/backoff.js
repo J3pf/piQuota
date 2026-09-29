@@ -25,7 +25,7 @@ const MAX_BACKOFF_MS = 30 * 60 * 1000;
 export function resolveBackoffPath(options = {}) {
   if (options.path) return options.path;
   const env = options.env ?? process.env;
-  const cacheHome = env.XDG_CACHE_HOME || join(options.home ?? homedir(), ".cache");
+  const cacheHome = options.home ? join(options.home, ".cache") : (env.XDG_CACHE_HOME || join(homedir(), ".cache"));
   return join(cacheHome, "pi-quota", "backoff.json");
 }
 
