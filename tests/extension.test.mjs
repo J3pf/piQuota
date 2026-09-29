@@ -674,3 +674,41 @@ test("the panel names the Claude store, and the line never does", async () => {
   const panel = plain(harness.widgets.at(-1).join("\n"));
   assert.match(panel, /Claude Code CLI/, "the panel says which store was read");
 });
+
+test("agent_end triggers a debounced quota refresh and agent_start cancels pending", async () => {
+  const previousDebounce = process.env.PI_QUOTA_EVENT_DEBOUNCE_MS;
+  process.env.PI_QUOTA_EVENT_DEBOUNCE_MS = "40";
+  try {
+    const module = await import(EXTENSION);
+    let execCalls = 0;
+    const harness = makeHarness();
+    const originalExec = harness.pi.exec;
+    harness.pi.exec = async (...args) => {
+      execCalls++;
+      return originalExec(...args);
+    };
+    module.default(harness.pi);
+    await startSession(harness);
+    const initialCalls = execCalls;
+
+    const onAgentEnd = harness.handlers.get("agent_end");
+    assert.equal(typeof onAgentEnd, "function", "must register agent_end handler");
+
+    // 1. Calling agent_start before debounce cancels it
+    await onAgentEnd({}, harness.ctx);
+    const onAgentStart = harness.handlers.get("agent_start");
+    assert.equal(typeof onAgentStart, "function", "must register agent_start handler");
+    onAgentStart({}, harness.ctx);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(execCalls, initialCalls, "agent_start must have cancelled the debounced refresh");
+
+    // 2. Calling agent_end without interruption triggers refresh
+    await onAgentEnd({}, harness.ctx);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.ok(execCalls > initialCalls, "agent_end must have triggered a quota refresh");
+  } finally {
+    if (previousDebounce === undefined) delete process.env.PI_QUOTA_EVENT_DEBOUNCE_MS;
+    else process.env.PI_QUOTA_EVENT_DEBOUNCE_MS = previousDebounce;
+  }
+});
+

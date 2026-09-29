@@ -40,7 +40,8 @@ const RAIL_KEY = "quota";
 // it. Every read is guarded: when the rail slot was never patched in, nothing here
 // runs and the box stays the only surface.
 const SIDEBAR_STATE_KEY = Symbol.for("gentle-pi.experimental-sidebar.state");
-const REFRESH_MS = 60_000;
+const REFRESH_MS = 120_000;
+const AGENT_END_DEBOUNCE_MS = 1_500;
 const EXEC_TIMEOUT_MS = 30_000;
 
 type QuotaWindow = {
@@ -518,6 +519,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   let report: QuotaReport | null = null;
   let refreshing = false;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let agentEndTimer: ReturnType<typeof setTimeout> | null = null;
   let panelVisible = false;
   /** The compact box is the default surface: its own row, nothing competes for it. */
   let lineVisible = true;
@@ -695,12 +697,36 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     (timer as unknown as { unref?: () => void }).unref?.();
   });
 
+  pi.on("agent_start", () => {
+    if (agentEndTimer) {
+      clearTimeout(agentEndTimer);
+      agentEndTimer = null;
+    }
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    const ui = ctx as unknown as UiContext;
+    if (!ui.hasUI || disposed) return;
+    if (agentEndTimer) clearTimeout(agentEndTimer);
+    const debounceMs = Number(process.env.PI_QUOTA_EVENT_DEBOUNCE_MS) || AGENT_END_DEBOUNCE_MS;
+    agentEndTimer = setTimeout(() => {
+      agentEndTimer = null;
+      if (!ui.hasUI || disposed) return;
+      void refresh(ui, false);
+    }, debounceMs);
+    (agentEndTimer as unknown as { unref?: () => void }).unref?.();
+  });
+
   pi.on("session_shutdown", async (_event, ctx) => {
     const ui = ctx as unknown as UiContext;
     disposed = true;
     if (timer) {
       clearInterval(timer);
       timer = null;
+    }
+    if (agentEndTimer) {
+      clearTimeout(agentEndTimer);
+      agentEndTimer = null;
     }
     if (ui.hasUI) {
       ui.ui.setStatus(STATUS_KEY, undefined);
