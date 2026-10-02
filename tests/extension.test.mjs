@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,11 +34,13 @@ function renderWidget(widget, theme = { fg: (_key, text) => text, bold: (text) =
 const SIDEBAR_STATE = Symbol.for("gentle-pi.experimental-sidebar.state");
 const STOCK_RAIL = 'const sections = ["footer", "agents", "todo"].map((key) => key);\n';
 
+const PATCHED_RAIL = 'const sections = ["footer", "agents", "todo", "quota"].map((key) => key);\n';
+
 /** A throwaway gentle-pi package so the rail tests never touch the real install. */
-function makeGentlePiFixture() {
+function makeGentlePiFixture(patched = false) {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-gentle-pi-"));
   mkdirSync(join(dir, "lib"), { recursive: true });
-  writeFileSync(join(dir, "lib", "shell-sidebar-layout.ts"), STOCK_RAIL, "utf-8");
+  writeFileSync(join(dir, "lib", "shell-sidebar-layout.ts"), patched ? PATCHED_RAIL : STOCK_RAIL, "utf-8");
   return dir;
 }
 
@@ -59,8 +61,8 @@ function makeCliTree() {
  * Run a body with `PI_QUOTA_BIN` and `PI_QUOTA_GENTLE_PI_DIR` pointed at fixtures,
  * restoring both afterwards so the other tests keep their hermetic defaults.
  */
-async function withRailFixtures(body) {
-  const gentlePiDir = makeGentlePiFixture();
+async function withRailFixtures(body, { patched = false } = {}) {
+  const gentlePiDir = makeGentlePiFixture(patched);
   const previousBin = process.env.PI_QUOTA_BIN;
   const previousDir = process.env.PI_QUOTA_GENTLE_PI_DIR;
   process.env.PI_QUOTA_BIN = makeCliTree();
@@ -220,7 +222,7 @@ test("the boxed widget is the default surface and the footer is left alone", asy
   assert.equal(harness.statuses.at(-1), undefined, "the footer must stay untouched by default");
 });
 
-test("the boxed widget still renders when gentle-pi sidebar symbols are present", async () => {
+test("the boxed widget remains when sidebar symbols are present but inactive", async () => {
   const module = await import(EXTENSION);
   const harness = makeHarness();
   module.default(harness.pi);
@@ -228,7 +230,7 @@ test("the boxed widget still renders when gentle-pi sidebar symbols are present"
 
   const tui = {
     terminal: {
-      [Symbol.for("gentle-pi.experimental-sidebar.state")]: { active: true, ownsHost: () => true, parts: new Map() },
+      [Symbol.for("gentle-pi.experimental-sidebar.state")]: { active: false, ownsHost: () => true, parts: new Map() },
       [Symbol.for("gentle-pi.experimental-sidebar.cache")]: { revision: 0 },
     },
   };
@@ -236,58 +238,124 @@ test("the boxed widget still renders when gentle-pi sidebar symbols are present"
   assert.match(plain(lines.join("\n")), /Claude:\s+○\s+4%/);
 });
 
-test("the rail slot is patched in at session start and then owns the card", async () => {
+test("a patched active rail registers quota natively and suppresses the above-editor widget", async () => {
   await withRailFixtures(async ({ layoutPath }) => {
+    const originalLayout = readFileSync(layoutPath, "utf-8");
     const module = await import(EXTENSION);
     const harness = makeHarness();
     module.default(harness.pi);
     await startSession(harness);
 
-    assert.match(readFileSync(layoutPath, "utf-8"), /"quota"/, "the rail slot must be added at session start");
+    assert.equal(readFileSync(layoutPath, "utf-8"), originalLayout, "startup must leave the installed layout unchanged");
 
     const state = { active: true, ownsHost: () => true, parts: new Map() };
     const lines = renderWidget(harness.widgets.at(-1), harness.ctx.ui.theme, 100, { terminal: { [SIDEBAR_STATE]: state } });
     assert.deepEqual(lines, [], "the rail is painting the card, so the box must not duplicate it");
     assert.ok(state.parts.get("quota"), "the rail part must be registered under the patched key");
-  });
+  }, { patched: true });
 });
 
-test("a patched rail that is not active collapses to the compact line", async () => {
+test("todo rail mounting suppresses the above-editor widget without ownsHost", async () => {
   await withRailFixtures(async () => {
     const module = await import(EXTENSION);
     const harness = makeHarness();
     module.default(harness.pi);
     await startSession(harness);
 
-    // Narrow terminals and regular mode never render the rail. When the rail is inactive,
-    // it collapses to a single compact line above the editor like gentle-pi's other components do.
-    const state = { active: false, ownsHost: () => true, parts: new Map() };
-    const lines = renderWidget(harness.widgets.at(-1), harness.ctx.ui.theme, 100, { terminal: { [SIDEBAR_STATE]: state } });
-    assert.equal(lines.length, 1, "inactive rail must collapse to a single line above the editor");
-    assert.match(plain(lines[0]), /Claude:○\s+4%/);
+    const widget = harness.widgets.at(-1);
+    const state = { active: false, parts: new Map([["todo", {}]]) };
+    const tui = { terminal: { [SIDEBAR_STATE]: state } };
+    const mountedWidget = widget(tui, harness.ctx.ui.theme);
+
+    tui.terminal[SIDEBAR_STATE] = { active: true, ownsHost: () => false, parts: new Map([["todo", {}]]) };
+    assert.deepEqual(mountedWidget.render(100), [], "a live active rail suppresses the duplicate even when ownsHost() is false");
+
+    for (const activeState of [
+      { active: true, parts: new Map([["todo", {}]]) },
+      { active: false, parts: new Map([["todo", {}]]) },
+    ]) {
+      const activeTui = { terminal: { [SIDEBAR_STATE]: activeState } };
+      const activeWidget = widget(activeTui, harness.ctx.ui.theme);
+      if (!activeState.active) {
+        activeTui.mode = "fullscreen";
+        activeTui.terminal.columns = 140;
+      }
+      assert.deepEqual(activeWidget.render(100), [], "active state or a wide fullscreen rail suppresses the box");
+    }
   });
 });
 
-test("a gentle-pi update that wipes the rail slot is repaired on the next session", async () => {
+test("an inactive patched rail keeps the default box and allows opting into the compact line", async () => {
+  await withRailFixtures(async () => {
+    const module = await import(EXTENSION);
+    const harness = makeHarness();
+    module.default(harness.pi);
+    await startSession(harness);
+
+    const state = { active: false, ownsHost: () => true, parts: new Map() };
+    const tui = { terminal: { [SIDEBAR_STATE]: state } };
+    const defaultLines = renderWidget(harness.widgets.at(-1), harness.ctx.ui.theme, 100, tui);
+    assert.equal(defaultLines.length, 7, "the box remains the default when the rail is inactive");
+
+    const quota = harness.commands.find((command) => command.name === "quota");
+    await quota.definition.handler("line", harness.ctx);
+    const lines = renderWidget(harness.widgets.at(-1), harness.ctx.ui.theme, 100, tui);
+    assert.equal(lines.length, 1, "explicit /quota line opts into the compact surface");
+    assert.match(plain(lines[0]), /Claude:○\s+4%/);
+  }, { patched: true });
+});
+
+test("an unpatched active rail uses the runtime hook without changing gentle-pi files", async () => {
+  await withRailFixtures(async ({ layoutPath }) => {
+    const originalLayout = readFileSync(layoutPath, "utf-8");
+    const module = await import(EXTENSION);
+    const harness = makeHarness();
+    module.default(harness.pi);
+    await startSession(harness);
+
+    const originalFooter = {
+      digest: () => "footer",
+      render: (width) => [`footer ${width}`],
+    };
+    const state = { active: true, ownsHost: () => true, parts: new Map([["footer", originalFooter]]) };
+    const tui = { terminal: { [SIDEBAR_STATE]: state } };
+    const widget = harness.widgets.at(-1)(tui, harness.ctx.ui.theme);
+
+    assert.deepEqual(widget.render(100), [], "the active rail owns the quota surface");
+    assert.equal(readFileSync(layoutPath, "utf-8"), originalLayout, "an unpatched layout stays byte-for-byte pristine");
+    assert.equal(existsSync(`${layoutPath}.pi-quota-backup`), false, "startup creates no patch backup");
+    assert.equal(originalLayout, STOCK_RAIL);
+    assert.equal(harness.notifications.length, 0, "runtime fallback needs no restart warning");
+    const chainedFooter = state.parts.get("footer");
+    assert.notEqual(chainedFooter, originalFooter);
+    assert.ok(state.parts.has("quota"), "the runtime quota part remains registered");
+    const railLines = chainedFooter.render(40);
+    assert.equal(railLines[0], "footer 40");
+    assert.match(plain(railLines.join("\n")), /Quota/);
+    assert.match(plain(railLines.join("\n")), /Claude:/);
+
+    widget.dispose();
+    assert.equal(state.parts.get("footer"), originalFooter, "disposal restores the original footer component");
+    assert.equal(state.parts.has("quota"), false, "disposal removes the quota rail part");
+  });
+});
+
+test("a gentle-pi update that removes the rail slot stays untouched and needs no restart warning", async () => {
   await withRailFixtures(async ({ layoutPath }) => {
     const module = await import(EXTENSION);
     const first = makeHarness();
     module.default(first.pi);
     await startSession(first);
-    assert.match(readFileSync(layoutPath, "utf-8"), /"quota"/);
+    assert.equal(readFileSync(layoutPath, "utf-8"), PATCHED_RAIL, "startup leaves the native rail layout unchanged");
 
-    // A package update replaces the patched file with the stock revision.
     writeFileSync(layoutPath, STOCK_RAIL, "utf-8");
 
     const second = makeHarness();
     module.default(second.pi);
     await startSession(second);
-    assert.match(readFileSync(layoutPath, "utf-8"), /"quota"/, "the validator must re-apply the patch");
-    assert.ok(
-      second.notifications.some((message) => message.includes("re-applied")),
-      "a repair must be reported instead of happening silently",
-    );
-  });
+    assert.equal(readFileSync(layoutPath, "utf-8"), STOCK_RAIL, "a package update remains unmodified");
+    assert.equal(second.notifications.length, 0, "the runtime fallback does not ask for a restart");
+  }, { patched: true });
 });
 
 test("the line shows used percent, not remaining", async () => {
@@ -396,6 +464,9 @@ test("subcommands toggle the line, the panel, the footer and hide everything", a
 
   await quota.definition.handler("line", harness.ctx);
   assert.equal(renderWidget(harness.widgets.at(-1)).length, 1);
+
+  await quota.definition.handler("box", harness.ctx);
+  assert.equal(renderWidget(harness.widgets.at(-1)).length, 7);
 
   await quota.definition.handler("status", harness.ctx);
   assert.match(plain(harness.statuses.at(-1)), /Claude:○ 4%/);

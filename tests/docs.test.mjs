@@ -22,7 +22,7 @@ const DOCS = ["README.md", "AGENTS.md", "docs/AUTH-FIELDS.md", "docs/MOSHI.md", 
 
 /** @param {string} path */
 function linesOf(path) {
-  return readFileSync(join(ROOT, path), "utf-8").split("\n");
+  return readFileSync(join(ROOT, path), "utf-8").split(/\r?\n/);
 }
 
 /**

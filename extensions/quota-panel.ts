@@ -35,10 +35,7 @@ import { pathToFileURL } from "node:url";
 const STATUS_KEY = "00-quota";
 const WIDGET_KEY = "quota-line";
 const RAIL_KEY = "quota";
-// gentle-pi publishes its rail state on the terminal, so the only way to know the
-// rail is painting the card (and the above-editor box would duplicate it) is to read
-// it. Every read is guarded: when the rail slot was never patched in, nothing here
-// runs and the box stays the only surface.
+// Symbol shared with gentle-pi's runtime sidebar state registry.
 const SIDEBAR_STATE_KEY = Symbol.for("gentle-pi.experimental-sidebar.state");
 const REFRESH_MS = Number(process.env.PI_QUOTA_REFRESH_MS) || 300_000;
 const AGENT_END_DEBOUNCE_MS = 1_500;
@@ -524,7 +521,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   /** The compact box is the default surface: its own row, nothing competes for it. */
   let lineVisible = true;
   let boxVisible = true;
-  let explicitBox = false;
+  let explicitBox = true;
   /** gentle-pi owns the footer and truncates it from the end, so start off. */
   let statusVisible = false;
   let lastError: string | null = null;
@@ -533,14 +530,12 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   let railMode = false;
 
   /**
-   * The rail patcher lives in the installed CLI tree, which is the only copy the
-   * extension can reach: it is loaded from ~/.pi/agent/extensions and has no access
-   * to the repository's src/. A missing tree is not an error, it just means the
-   * native box stays the only surface.
+   * Load the rail inspector from the installed CLI tree. A missing patcher disables
+   * native-layout detection; the runtime chaining hook remains available.
    */
   async function loadRailPatcher(): Promise<{
     resolveGentlePiLayout: (options?: { dir?: string }) => { layoutPath: string; present: boolean };
-    ensureRailPatch: (options: { layoutPath: string }) => { repaired: boolean; ok: boolean; state: string; detail: string };
+    inspectRailPatch: (options: { layoutPath: string }) => { state: string };
   } | null> {
     const cli = resolveCliPath();
     if (!cli) return null;
@@ -553,21 +548,15 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     }
   }
 
-  /**
-   * Validate the gentle-pi rail slot on every session start and repair it when a
-   * gentle-pi update replaced the patched file with the stock revision.
-   */
-  async function syncRailPatch(ctx: UiContext): Promise<void> {
+  /** Inspect the gentle-pi rail slot without changing package files. */
+  async function syncRailPatch(): Promise<void> {
     railMode = false;
     const patcher = await loadRailPatcher();
     if (!patcher) return;
     const layout = patcher.resolveGentlePiLayout();
     if (!layout.present) return;
-    const result = patcher.ensureRailPatch({ layoutPath: layout.layoutPath });
-    railMode = result.ok && result.state === "patched";
-    if (result.repaired) {
-      ctx.ui.notify(`gentle-pi lost the quota rail slot (${result.detail}); it has been re-applied. Restart Pi to load it.`, "info");
-    }
+    const inspection = patcher.inspectRailPatch({ layoutPath: layout.layoutPath });
+    railMode = inspection.state === "patched";
   }
 
   async function runCli(args: string[]): Promise<QuotaReport | null> {
@@ -619,7 +608,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     ctx.ui.setWidget(
       WIDGET_KEY,
       (tui: any, widgetTheme: Theme) => {
-        const state = railMode ? tui?.terminal?.[SIDEBAR_STATE_KEY] : undefined;
+        const rawState = tui?.terminal?.[SIDEBAR_STATE_KEY];
         const activeTheme = widgetTheme || theme;
         const digest = () =>
           report
@@ -631,21 +620,70 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
                 )
                 .join("|")}`
             : "loading";
+        let nativeQuotaRendered = false;
         const rail = {
           digest,
-          render: (w: number) => renderSidebarCard(report, activeTheme, w),
+          render: (w: number) => {
+            nativeQuotaRendered = true;
+            return renderSidebarCard(report, activeTheme, w);
+          },
           invalidate() {},
         };
-        if (state?.parts) state.parts.set(RAIL_KEY, rail);
+
+        let railActive = Boolean(rawState?.active && rawState?.ownsHost?.());
+
+        if (rawState?.parts) {
+          rawState.parts.set(RAIL_KEY, rail);
+
+          // Runtime resilience: if gentle-pi's rail is active and has a footer part,
+          // but railMode is false (e.g. unpatched gentle-pi, freshly updated package before
+          // restart, or read-only filesystem), wrap the footer component so the quota card
+          // is seamlessly rendered right under the footer in the rail.
+          if (!railMode && rawState.parts.has("footer")) {
+            const originalFooter = rawState.parts.get("footer");
+            if (originalFooter && !(originalFooter as any).__piQuotaChained) {
+              const chainedFooter = {
+                ...originalFooter,
+                __piQuotaChained: true,
+                __piQuotaOriginal: originalFooter,
+                digest() {
+                  const fd = originalFooter.digest?.() ?? "";
+                  return nativeQuotaRendered ? fd : `${fd}:quota:${digest()}`;
+                },
+                render(w: number) {
+                  const fl = [...(originalFooter.render(w) ?? [])];
+                  if (nativeQuotaRendered) return fl;
+                  const ql = renderSidebarCard(report, activeTheme, w);
+                  if (!ql || ql.length === 0) return fl;
+                  return [...fl, "", ...ql];
+                },
+                handleMouse(event: any) {
+                  return originalFooter.handleMouse?.(event);
+                },
+                invalidate() {
+                  originalFooter.invalidate?.();
+                },
+              };
+              rawState.parts.set("footer", chainedFooter);
+              railActive = Boolean(rawState.active && rawState.ownsHost?.());
+            } else if (originalFooter?.__piQuotaChained) {
+              railActive = Boolean(rawState.active && rawState.ownsHost?.());
+            }
+          }
+        }
+
+        const state = (railMode || railActive) ? rawState : undefined;
+
         return {
           render: (w: number) => {
-            // The rail is painting the card in its own column, so an above-editor box
-            // would show the same numbers twice.
-            if (state?.active && state?.ownsHost?.()) return [];
+            const liveState = tui?.terminal?.[SIDEBAR_STATE_KEY] ?? rawState;
+            const isFullscreen = (tui as any)?.mode === "fullscreen";
+            const cols = tui?.terminal?.columns ?? process.stdout.columns ?? 0;
+            const isRailActive = Boolean(liveState && (liveState.active || (cols >= 140 && isFullscreen)));
+            if (isRailActive) return [];
             if (!report) return [activeTheme.fg("dim", "quota …")];
-            // When gentle-pi is present and the sidebar is inactive (narrow screen / breakpoint < 140),
-            // or when the terminal is narrow (< 100), collapse to a single line like gentle-pi's other
-            // components do, unless the user explicitly requested the box with `/quota box`.
+            // When gentle-pi is present and the sidebar is inactive or the terminal is narrow,
+            // compact to one row only when the box has not been selected.
             if (((railMode && state !== undefined) || (state && !state.active)) && !explicitBox) {
               return [renderLine(report, activeTheme)];
             }
@@ -657,7 +695,11 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
             return [];
           },
           dispose: () => {
-            if (state?.parts?.get(RAIL_KEY) === rail) state.parts.delete(RAIL_KEY);
+            if (rawState?.parts?.get(RAIL_KEY) === rail) rawState.parts.delete(RAIL_KEY);
+            const currentFooter = rawState?.parts?.get("footer");
+            if (currentFooter?.__piQuotaChained && currentFooter.__piQuotaOriginal) {
+              rawState.parts.set("footer", currentFooter.__piQuotaOriginal);
+            }
           },
         };
       },
@@ -682,9 +724,8 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     const ui = ctx as unknown as UiContext;
     if (!ui.hasUI) return;
     disposed = false;
-    // The rail decision must be made before the first paint, so a repaired slot is
-    // used immediately instead of after one frame of the above-editor box.
-    await syncRailPatch(ui);
+    // Resolve the native rail mode before the first paint.
+    await syncRailPatch();
     if (disposed) return;
     paintUi(ui);
     void refresh(ui, false);

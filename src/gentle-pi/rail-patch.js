@@ -49,13 +49,14 @@ function reason(error) {
 
 /**
  * Every `const sections = [...]` allowlist in the file, each with its own offsets
- * so a rewrite can replace exactly one of them.
+ * so a rewrite can replace exactly one of them. Matches both simple `.map()` chains
+ * (gentle-pi 3.x) and filtered/chained pipelines like `.filter(...).map()` (gentle-pi 4.x+).
  *
  * @param {string} text
  * @returns {Array<{ text: string, inner: string, index: number }>}
  */
 function findSectionAllowlists(text) {
-  const pattern = /const\s+sections\s*=\s*\[([^\]]*)\](?=\s*\.map\()/g;
+  const pattern = /(?:const|let|var)\s+sections\s*=\s*\[([^\]]*)\]/g;
   /** @type {Array<{ text: string, inner: string, index: number }>} */
   const found = [];
   let match;
@@ -70,7 +71,7 @@ function findSectionAllowlists(text) {
  * @returns {string[]}
  */
 function keysOf(inner) {
-  const pattern = /"([^"]+)"/g;
+  const pattern = /["']([^"']+)["']/g;
   /** @type {string[]} */
   const keys = [];
   let match;
@@ -79,15 +80,17 @@ function keysOf(inner) {
 }
 
 /**
- * Append a key while preserving the spacing of the entries already present.
+ * Append a key while preserving the spacing and quote style of the entries already present.
  *
  * @param {string} inner
  * @param {string} part
  * @returns {string}
  */
 function appendPart(inner, part) {
+  const quote = /'/.test(inner) && !/"/.test(inner) ? "'" : '"';
+  const entry = `${quote}${part}${quote}`;
   const trimmed = inner.replace(/\s+$/, "");
-  return trimmed === "" ? `"${part}"` : `${trimmed}, "${part}"`;
+  return trimmed === "" ? entry : `${trimmed}, ${entry}`;
 }
 
 /**
@@ -101,12 +104,12 @@ function appendPart(inner, part) {
  */
 function dropPart(inner, part) {
   const escaped = part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const trailing = new RegExp(`,\\s*"${escaped}"\\s*$`);
+  const trailing = new RegExp(`,\\s*["']${escaped}["']\\s*$`);
   if (trailing.test(inner)) return inner.replace(trailing, "");
-  const leading = new RegExp(`"${escaped}"\\s*,\\s*`);
+  const leading = new RegExp(`["']${escaped}["']\\s*,\\s*`);
   if (leading.test(inner)) return inner.replace(leading, "");
   // The part can be the only entry, and then there is no comma to remove with it.
-  const only = new RegExp(`^\\s*"${escaped}"\\s*$`);
+  const only = new RegExp(`^\\s*["']${escaped}["']\\s*$`);
   if (only.test(inner)) return "";
   return inner;
 }

@@ -235,3 +235,66 @@ test("ensureRailPatch reports a repair only when a wipe was actually undone", ()
   assert.equal(third.ok, true);
   assert.equal(inspectRailPatch({ layoutPath }).state, "patched");
 });
+
+test("gentle-shell 4.0.0 pipeline with .filter().map() is recognized and patched cleanly", () => {
+  const v4Fixture = `export function installSidebar(tui, theme) {
+    const sections = ["footer", "agents", "todo"].filter((key) => key !== "todo" || state.visibility?.todo !== false).map((key) => {
+      const component = state.parts.get(key);
+      return { key, component, lines: [] };
+    });
+    return sections;
+  }`;
+  const { layoutPath } = fixture(v4Fixture);
+
+  const inspected = inspectRailPatch({ layoutPath });
+  assert.equal(inspected.state, "unpatched");
+  assert.deepEqual(inspected.sections, ["footer", "agents", "todo"]);
+
+  const applied = applyRailPatch({ layoutPath });
+  assert.equal(applied.ok, true);
+  assert.equal(applied.changed, true);
+  assert.equal(applied.state, "patched");
+
+  const content = readFileSync(layoutPath, "utf-8");
+  assert.ok(content.includes('const sections = ["footer", "agents", "todo", "quota"].filter('));
+  assert.ok(content.includes('.filter((key) => key !== "todo" || state.visibility?.todo !== false).map('));
+
+  const reverted = revertRailPatch({ layoutPath });
+  assert.equal(reverted.ok, true);
+  assert.equal(readFileSync(layoutPath, "utf-8"), v4Fixture);
+});
+
+test("single-quoted and multiline allowlists are recognized and patched", () => {
+  const multilineFixture = `const sections = [
+    'footer',
+    'agents',
+    'todo'
+  ].map((k) => k);`;
+  const { layoutPath } = fixture(multilineFixture);
+
+  const inspected = inspectRailPatch({ layoutPath });
+  assert.equal(inspected.state, "unpatched");
+  assert.deepEqual(inspected.sections, ["footer", "agents", "todo"]);
+
+  const applied = applyRailPatch({ layoutPath });
+  assert.equal(applied.ok, true);
+  assert.equal(applied.state, "patched");
+
+  const content = readFileSync(layoutPath, "utf-8");
+  assert.ok(content.includes("'quota'"));
+
+  const reverted = revertRailPatch({ layoutPath });
+  assert.equal(reverted.ok, true);
+  assert.deepEqual(inspectRailPatch({ layoutPath }).sections, ["footer", "agents", "todo"]);
+});
+
+test("un-chained sections array declaration is recognized", () => {
+  const simpleFixture = 'const sections = ["footer", "agents", "todo"];\nfor (const s of sections) {}';
+  const { layoutPath } = fixture(simpleFixture);
+
+  assert.equal(inspectRailPatch({ layoutPath }).state, "unpatched");
+  assert.equal(applyRailPatch({ layoutPath }).ok, true);
+  assert.deepEqual(inspectRailPatch({ layoutPath }).sections, ["footer", "agents", "todo", "quota"]);
+  assert.equal(revertRailPatch({ layoutPath }).ok, true);
+  assert.deepEqual(inspectRailPatch({ layoutPath }).sections, ["footer", "agents", "todo"]);
+});
