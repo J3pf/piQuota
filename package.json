@@ -1,7 +1,6 @@
 {
-  "name": "pi-quota",
+  "name": "piquota",
   "version": "0.9.0",
-  "private": true,
   "type": "module",
   "description": "Read-only quota monitor for the AI provider credentials Pi already owns: terminal CLI, Pi TUI line, and Moshi usage and approval cards",
   "engines": {
@@ -9,6 +8,38 @@
   },
   "bin": {
     "piquota": "./bin/piquota.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "quota",
+    "ai-agents",
+    "rate-limits",
+    "claude",
+    "codex",
+    "antigravity",
+    "opencode"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/J3pf/piQuota.git"
+  },
+  "bugs": {
+    "url": "https://github.com/J3pf/piQuota/issues"
+  },
+  "homepage": "https://github.com/J3pf/piQuota#readme",
+  "pi": {
+    "extensions": [
+      "./extensions/quota-panel.ts",
+      "./extensions/moshi-approvals.ts"
+    ]
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
