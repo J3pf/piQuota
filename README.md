@@ -137,6 +137,32 @@ the `read:org`, `repo`, and `workflow` scopes may be required.
 curl -fsSL https://raw.githubusercontent.com/J3fp/piQuota/master/install.sh | bash
 ```
 
+### Install the Pi extension from npm
+
+```bash
+pi install npm:@j3pf/piquota
+```
+
+Loads both Pi extensions straight from the package. The quota panel resolves
+the CLI from inside the package, so nothing else is required to see quotas in
+the TUI.
+
+| Capability | `pi install npm:` | `install.sh` |
+| --- | --- | --- |
+| TUI panel, sidebar and `/quota` | yes | yes |
+| Omarchy bar records | yes, written on every refresh | yes |
+| `piquota` on your `PATH` for terminal use | no | yes, symlinked |
+| Omarchy sync while Pi is closed | no | yes, with `--omarchy-timer` |
+| Moshi background service | no | yes |
+
+If you live inside Pi and use Omarchy, the npm route covers it: the extension
+runs `piquota omarchy` on every quota refresh, so the bar fills without any
+setup. Choose `install.sh` when you want the CLI in a terminal, or background
+sync while Pi is not running.
+
+The approval mirror extension loads under either route and does nothing unless
+`moshi-hook` is installed.
+
 ### Manual Install / Development
 
 ```bash
