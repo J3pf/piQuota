@@ -723,8 +723,11 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     try {
       const next = await runCli(force ? ["--json", "--force"] : ["--json"]);
       if (disposed) return;
-      if (next) report = next;
-      paintUi(ctx);
+      if (next) {
+        report = next;
+        paintUi(ctx);
+        void runCli(["omarchy"]);
+      }
     } finally {
       refreshing = false;
     }
