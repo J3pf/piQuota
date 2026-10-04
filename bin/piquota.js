@@ -13,6 +13,7 @@
  *   piquota moshi service ...    install/remove the user service that runs `moshi watch`
  *   piquota moshi takeover       become the only usage publisher on the paired host
  *   piquota moshi release        hand usage publishing back to moshi-hook's own poller
+ *   piquota omarchy              publish pi-*.json records for Omarchy's Agents bar panel
  *   piquota gentle-pi <status|apply|revert>
  *                                the rail slot gentle-pi needs to paint the quota card
  */
@@ -22,6 +23,7 @@ import { parseArgs } from "../src/cli/args.js";
 import { runAuthCommand } from "../src/cli/commands/auth.js";
 import { runGentlePiCommand } from "../src/cli/commands/gentle-pi.js";
 import { runMoshiCommand } from "../src/cli/commands/moshi.js";
+import { runOmarchyCommand } from "../src/cli/commands/omarchy.js";
 import { explainLines, resolveFamilies } from "../src/cli/explain.js";
 import { err, out } from "../src/cli/output.js";
 import { collectQuota, FAMILIES } from "../src/engine.js";
@@ -30,7 +32,7 @@ import { mergeLastGood } from "../src/moshi/sticky.js";
 import { renderBoxWidget, renderCompact, renderPanel, renderStatusLine } from "../src/render/panel.js";
 import { ansiPalette } from "../src/render/theme.js";
 
-const VERSION = "0.8.0";
+const VERSION = "0.9.0";
 
 const HELP = `piquota ${VERSION} — read-only quota from Pi's provider credentials
 
@@ -39,6 +41,7 @@ Usage:
   piquota auth <opencode|status> [flags]
   piquota moshi <push|watch|artifact|status|service|takeover|release> [flags]
   piquota gentle-pi <status|apply|revert>
+  piquota omarchy
 
 Quota:
   --json             Emit the normalized report as JSON
@@ -75,11 +78,18 @@ Moshi:
   piquota moshi takeover           stop moshi-hook's own poller so only these cards exist
   piquota moshi release            restore moshi-hook's own poller and stop overriding it
 
+Omarchy:
+  piquota omarchy                  write pi-<family>.json records for Omarchy's Agents bar panel
+                                   (dir: $PI_QUOTA_OMARCHY_DIR or $XDG_STATE_HOME/omarchy/agents/usage)
+                                   run it on a timer: ./install.sh --omarchy-timer
+
 Guarantees:
   * ~/.pi/agent/auth.json is opened read-only. Never written, synced or refreshed.
   * Antigravity's access token may be refreshed in memory; it is never persisted.
   * Browser cookie databases are copied and opened read-only; values are never logged.
   * Only percentages, window labels, reset times and plan names leave this machine.
+  * \`omarchy\` (opt-in) writes only pi-*.json records, atomically, into Omarchy's usage dir;
+    records hold plan names, percentages, window labels and reset times, never accounts.
   * \`gentle-pi\` is the one file this tool edits outside its own state: it appends
     piQuota's part to gentle-pi's rail allowlist so the card can be painted there.
     The edit is one array literal, it is reversible with \`piquota gentle-pi revert\`,
@@ -127,6 +137,18 @@ async function main() {
   if (command === "moshi") {
     const sub = bare[1] ?? "status";
     return runMoshiCommand(sub, argv, { agentMode, refresh, timeoutMs: args.timeoutMs });
+  }
+
+  if (command === "omarchy") {
+    const load = async () => {
+      const everyFamily = FAMILIES;
+      const loadFresh = () => collectQuota({ families: everyFamily, timeoutMs: args.timeoutMs, refresh, force: args.force });
+      const fresh = args.noCache
+        ? await loadFresh()
+        : (await withCache({ ttlMs: args.ttlMs, force: args.force, families: everyFamily }, loadFresh)).report;
+      return mergeLastGood(fresh, {}).report;
+    };
+    return runOmarchyCommand({ load });
   }
 
   const { families, unknown } = resolveFamilies(

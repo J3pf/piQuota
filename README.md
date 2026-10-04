@@ -161,6 +161,8 @@ piquota moshi artifact          # write the local JSON artifact (--print for std
 piquota moshi service install|uninstall|status
 piquota moshi takeover          # make these cards the only ones on the host
 piquota moshi release           # hand publishing back to moshi-hook
+
+piquota omarchy                 # write pi-*.json records for Omarchy's Agents panel
 ```
 
 Colours: green above 50% remaining, yellow 20–50%, red below 20%.
@@ -403,6 +405,30 @@ failure (expired sign-in, missing credential) is never masked.
 (`pi-quota-moshi.service`) on Linux and WSL2. On macOS (which uses `launchd` instead of `systemd`), run `piquota moshi watch &` in the background (or inside tmux/zellij, or via a LaunchAgent plist). Full protocol notes, including how the endpoint and
 schema were recovered: [docs/MOSHI.md](docs/MOSHI.md).
 
+## Omarchy integration
+
+Omarchy 4.0.4's **Agents** bar panel draws every `*.json` record in
+`${XDG_STATE_HOME:-~/.local/state}/omarchy/agents/usage/`, whoever wrote it.
+`piquota omarchy` (opt-in, one shot) writes one record per provider piQuota can
+read, so Claude, Codex, Antigravity and OpenCode Go all get a tab:
+
+```bash
+piquota omarchy                  # write pi-claude.json, pi-codex.json, ... once
+./install.sh --omarchy-timer     # also run it every 5 minutes (systemd user timer)
+```
+
+- Records are named `pi-<family>.json`, so they never overwrite Omarchy's own
+  `claude.json` / `codex.json`. They hold plan names, used percentages, window
+  labels and reset times only; no tokens, accounts or e-mail addresses.
+- A provider with a failing sign-in shows a status and a help line instead of
+  limits. A provider that is not configured gets no record, and a stale
+  `pi-*.json` is removed on the next run.
+- Omarchy's native collector already tracks Claude with richer local statistics, so
+  `piquota omarchy` automatically skips `claude` and cleans up duplicate `pi-claude.json`
+  files when `claude.json` exists in the usage directory (override with `PI_QUOTA_OMARCHY_SKIP`).
+- `PI_QUOTA_OMARCHY_DIR` overrides the output directory. `./install.sh --uninstall`
+  removes the timer and the `pi-*.json` records.
+
 ## Layout
 
 ```
@@ -426,10 +452,13 @@ src/engine.js                  collectQuota() -> one normalized report
 src/model.js                   window normalization, percent and reset parsing
 src/render/{theme,panel}.js    colors, thresholds, rings, bars, boxed panel
 src/cache.js                   report cache at ~/.cache/pi-quota/usage.json
+src/omarchy/record.js          pure mapping from the report to Omarchy usage records
+src/omarchy/publish.js         atomic writer for pi-*.json, and stale-record cleanup
 src/refresh.js                 per-family refresh clocks, and the merge back into one report
 src/cli/args.js                argument parsing, and the flag/positional split
 src/exec.js                    the one place that spawns a foreign binary
 src/http.js                    fetch wrapper: timeouts, JSON, redaction
+contrib/systemd/               user service and timer behind `install.sh --omarchy-timer`
 bin/piquota.js                 the only CLI
 extensions/quota-panel.ts      Pi TUI line and /quota
 extensions/moshi-approvals.ts  mirrors Pi's approval prompts to the phone
@@ -459,7 +488,7 @@ extensions/moshi-approvals.ts  mirrors Pi's approval prompts to the phone
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 249 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 271 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store
@@ -468,7 +497,7 @@ byte-identical), Claude source precedence, the four providers (including the two
 Antigravity failures and the OpenCode degradation), the dashboard parser's three
 strategies, the Firefox cookie reader against a synthetic SQLite database, the
 Antigravity refresh (in-memory only), the Moshi takeover and daemon-restart
-helpers, the Moshi payload/redaction/transport, the renderers, the Pi
+helpers, the Moshi payload/redaction/transport, the Omarchy record mapping and atomic writer, the renderers, the Pi
 extension contract, the approval mirror (through a real Unix socket), the per-family
 refresh clocks, argument parsing including the two silent defects it once hid, and the
 structure of these documents themselves (tables, fences, links, anchors).
