@@ -22,11 +22,14 @@ export const FAMILY_ALIASES = {
   opencode: "opencode-go",
   go: "opencode-go",
   zen: "opencode-go",
+  "github-actions": "github-actions",
+  gh: "github-actions",
+  actions: "github-actions",
 };
 
 /**
  * @param {string[]} positionals
- * @returns {{ families: string[], unknown: string[] }}
+ * @returns {{ families: string[], unknown: string[], explicit: boolean }}
  */
 export function resolveFamilies(positionals) {
   /** @type {string[]} */
@@ -42,7 +45,7 @@ export function resolveFamilies(positionals) {
     }
     if (!families.includes(family)) families.push(family);
   }
-  return { families, unknown };
+  return { families, unknown, explicit: families.length > 0 };
 }
 
 /**

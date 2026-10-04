@@ -26,7 +26,7 @@ import { runMoshiCommand } from "../src/cli/commands/moshi.js";
 import { runOmarchyCommand } from "../src/cli/commands/omarchy.js";
 import { explainLines, resolveFamilies } from "../src/cli/explain.js";
 import { err, out } from "../src/cli/output.js";
-import { collectQuota, FAMILIES } from "../src/engine.js";
+import { collectQuota, enabledFamilies } from "../src/engine.js";
 import { redact } from "../src/http.js";
 import { mergeLastGood } from "../src/moshi/sticky.js";
 import { renderBoxWidget, renderCompact, renderPanel, renderStatusLine } from "../src/render/panel.js";
@@ -141,7 +141,7 @@ async function main() {
 
   if (command === "omarchy") {
     const load = async () => {
-      const everyFamily = FAMILIES;
+      const everyFamily = enabledFamilies({ env: process.env });
       const loadFresh = () => collectQuota({ families: everyFamily, timeoutMs: args.timeoutMs, refresh, force: args.force });
       const fresh = args.noCache
         ? await loadFresh()
@@ -151,7 +151,7 @@ async function main() {
     return runOmarchyCommand({ load });
   }
 
-  const { families, unknown } = resolveFamilies(
+  const { families, unknown, explicit } = resolveFamilies(
     command === "quota" ? bare.slice(1) : bare.filter((value) => value !== "moshi" && value !== "quota"),
   );
 
@@ -161,8 +161,12 @@ async function main() {
     return 2;
   }
 
-  const selected = families.length > 0 ? families : FAMILIES;
-  const load = () => collectQuota({ families: selected, timeoutMs: args.timeoutMs, refresh, force: args.force });
+  const selected = enabledFamilies({
+    env: process.env,
+    requested: families.length > 0 ? families : undefined,
+    explicit,
+  });
+  const load = () => collectQuota({ families: selected, explicit, timeoutMs: args.timeoutMs, refresh, force: args.force });
 
   let report;
   let cached = false;

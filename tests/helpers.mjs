@@ -84,6 +84,43 @@ export function codexUsageBody(options = {}) {
   };
 }
 
+/** Synthetic GitHub Actions organization usage summary. */
+export function githubActionsSummaryBody(usageItems = [
+  { product: "Actions", sku: "actions_linux", grossQuantity: 52, unitType: "minutes" },
+  { product: "Actions", sku: "actions_storage", grossQuantity: 999, unitType: "gigabyte-hours" },
+  { product: "Actions", sku: "actions_windows", grossQuantity: 800, unitType: "minutes" },
+  { product: "Packages", sku: "actions_linux", grossQuantity: 500, unitType: "minutes" },
+]) {
+  return {
+    timePeriod: { year: 2026, month: 10 },
+    organization: "KoralisSoft",
+    product: "Actions",
+    usageItems,
+  };
+}
+
+/** Synthetic GitHub Actions detailed monthly usage body. */
+export function githubActionsUsageBody(usageItems = [
+  {
+    date: "2026-10-01",
+    product: "actions",
+    sku: "actions_linux",
+    quantity: 52,
+    unitType: "minutes",
+    repositoryName: "easypets-registry-api",
+  },
+  {
+    date: "2026-10-01",
+    product: "actions",
+    sku: "actions_storage",
+    quantity: 250,
+    unitType: "gigabyte-hours",
+    repositoryName: "easypets-registry-api",
+  },
+]) {
+  return { usageItems };
+}
+
 /** Realistic Anthropic OAuth usage body. */
 export function claudeUsageBody() {
   return {

@@ -15,6 +15,7 @@ const FAMILY_SHORT = {
   codex: "X",
   antigravity: "A",
   "opencode-go": "G",
+  "github-actions": "GH",
 };
 
 const FAMILY_TITLE = {
@@ -22,6 +23,7 @@ const FAMILY_TITLE = {
   codex: "Codex (Pi)",
   antigravity: "Antigravity (Pi)",
   "opencode-go": "OpenCode Go (Pi)",
+  "github-actions": "GitHub Actions",
 };
 
 const MIN_WIDTH = 52;
@@ -238,6 +240,9 @@ export function renderBoxWidget(providers, paint, totalWidth = typeof process?.s
     { label: "Agy C/G:", ...windowFor("antigravity", (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))) },
     { label: "OP-Go:  ", ...windowFor("opencode-go") },
   ];
+  if (providerFor("github-actions")) {
+    rows.push({ label: "GH Actions:", ...windowFor("github-actions", (window) => window.id === "monthly") });
+  }
 
   const content = rows.map(({ label, provider, window }) => {
     const name = paint("bold", label);

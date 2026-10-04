@@ -99,6 +99,7 @@ const BRAND: Record<string, string> = {
   codex: "#10A37F",
   antigravity: "#4285F4",
   "opencode-go": "#007AFF",
+  "github-actions": "#2088FF",
 };
 
 /** Short display names that stay legible in one row. */
@@ -107,6 +108,7 @@ const SHORT_NAME: Record<string, string> = {
   codex: "Codex",
   antigravity: "Agy",
   "opencode-go": "OP-Go",
+  "github-actions": "GH",
 };
 
 /** Semaphore bands, expressed in *used* percent. */
@@ -378,6 +380,9 @@ export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number
     { label: "Agy C/G:", color: "#7AA2F7", ...windowFor("antigravity", (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))) },
     { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go", isFiveHour) },
   ];
+  if (providerFor("github-actions")) {
+    rows.push({ label: "GH Actions:", color: "#2088FF", ...windowFor("github-actions", (window) => window.id === "monthly") });
+  }
   const content = rows.map(({ label, color, provider, window }) => {
     const name = paint(color, label);
     if (!provider || !provider.ok) {
@@ -424,6 +429,9 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
         { label: "Agy:    ", color: "#4285F4", ...windowFor("antigravity", (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window))) },
         { label: "Agy C/G:", color: "#7AA2F7", ...windowFor("antigravity", (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))) },
         { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go", isFiveHour) },
+        ...(providerFor("github-actions")
+          ? [{ label: "GH Actions:", color: "#2088FF", ...windowFor("github-actions", (window) => window.id === "monthly") }]
+          : []),
       ]
     : [];
   const content = rows.length > 0

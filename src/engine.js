@@ -14,9 +14,41 @@ import { fetchQuota as fetchClaude } from "./providers/claude.js";
 import { fetchQuota as fetchCodex } from "./providers/codex.js";
 import { fetchQuota as fetchAntigravity } from "./providers/antigravity.js";
 import { fetchQuota as fetchOpenCodeGo } from "./providers/opencode-go.js";
+import { fetchQuota as fetchGithubActions } from "./providers/github-actions.js";
 
 /** Canonical family order used by every surface. */
-export const FAMILIES = ["claude", "codex", "antigravity", "opencode-go"];
+export const FAMILIES = ["claude", "codex", "antigravity", "opencode-go", "github-actions"];
+
+/**
+ * Return the ordered families enabled for a run.
+ *
+ * GitHub Actions joins a default family list only when the env flag is truthy.
+ * A positional family selection sets `explicit` to record user consent directly,
+ * independent of whether the requested array has been copied or transformed.
+ *
+ * @param {{ env?: Record<string, string | undefined>, requested?: string[], explicit?: boolean }} [input]
+ * @returns {string[]}
+ */
+export function enabledFamilies(input = {}) {
+  const env = input.env ?? process.env;
+  const requested = input.requested;
+  const families = requested ?? FAMILIES;
+  const explicit = input.explicit ?? false;
+  const includeGithubActions = isTruthyFlag(env.PI_QUOTA_GITHUB_ACTIONS) || explicit;
+  return families.filter((family) => family !== "github-actions" || includeGithubActions);
+}
+const GH_CLI_CREDENTIAL = {
+  family: "github-actions",
+  label: "GitHub Actions",
+  source: "gh CLI",
+  identity: "GitHub CLI",
+  expiresAtMs: null,
+};
+
+/** @param {string | undefined} value */
+function isTruthyFlag(value) {
+  return typeof value === "string" && /^(1|true|yes|on)$/i.test(value.trim());
+}
 
 /**
  * Claude has two possible sources, and a user may have either or both.
@@ -101,6 +133,7 @@ const PROVIDERS = {
   codex: fetchCodex,
   antigravity: fetchAntigravity,
   "opencode-go": fetchOpenCodeGo,
+  "github-actions": fetchGithubActions,
 };
 
 /**
@@ -118,6 +151,7 @@ const PROVIDERS = {
 /**
  * @param {{
  *   families?: string[],
+ *   explicit?: boolean,
  *   env?: Record<string, string | undefined>,
  *   home?: string,
  *   platform?: string,
@@ -125,6 +159,7 @@ const PROVIDERS = {
  *   paths?: string[],
  *   now?: number,
  *   fetchFn?: typeof fetch,
+ *   runCommand?: typeof import("./exec.js").runCommand,
  *   timeoutMs?: number,
  *   refresh?: boolean,
  *   force?: boolean,
@@ -137,7 +172,7 @@ const PROVIDERS = {
 export async function collectQuota(options = {}) {
   const env = options.env ?? process.env;
   const now = options.now ?? Date.now();
-  const families = options.families ?? FAMILIES;
+  const families = enabledFamilies({ env, requested: options.families, explicit: options.explicit });
 
   const loaded = loadPiCredentials({
     env,
@@ -162,8 +197,11 @@ export async function collectQuota(options = {}) {
    * @param {string} family
    * @returns {import("./auth/pi-auth.js").PiCredential[]}
    */
-  const credentialsFor = (family) =>
-    family === "claude" ? claude.credentials : loaded.credentials.filter((credential) => credential.family === family);
+  const credentialsFor = (family) => {
+    if (family === "claude") return claude.credentials;
+    if (family === "github-actions") return [GH_CLI_CREDENTIAL];
+    return loaded.credentials.filter((credential) => credential.family === family);
+  };
 
   /** @type {Record<string, import("./model.js").QuotaResult[]>} */
   const byFamily = {};
@@ -246,6 +284,7 @@ export async function collectQuota(options = {}) {
           const result = await fetchQuota(credential, {
             now,
             fetchFn: options.fetchFn,
+            runCommand: options.runCommand,
             timeoutMs: options.timeoutMs,
             expiresInMin: freshness.expiresInMin,
             env,
@@ -323,6 +362,9 @@ export async function collectQuota(options = {}) {
 function missingCredentialMessage(family, context = {}) {
   if (family === "claude") {
     return "no claude credential in the Pi store or from the Claude Code CLI";
+  }
+  if (family === "github-actions") {
+    return "GitHub Actions uses the authenticated gh CLI; no Pi-store credential is required";
   }
   if (family === "codex" && context.hasOpenAi) {
     return "no codex credential in the Pi store (found 'openai' API; run /login openai-codex in Pi for subscription quota)";

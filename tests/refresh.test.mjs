@@ -354,5 +354,5 @@ test("the names the callers rely on are always present", async () => {
   for (const family of ALL) {
     assert.equal(typeof result.ageMs[family], "number", `ageMs.${family}`);
   }
-  assert.deepEqual(FAMILIES, ["claude", "codex", "antigravity", "opencode-go"]);
+  assert.deepEqual(FAMILIES, ["claude", "codex", "antigravity", "opencode-go", "github-actions"]);
 });

@@ -18,6 +18,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { parseArgs } from "../src/cli/args.js";
+import { FAMILIES, enabledFamilies } from "../src/engine.js";
+import { resolveFamilies } from "../src/cli/explain.js";
 
 const CLI = fileURLToPath(new URL("../bin/piquota.js", import.meta.url));
 
@@ -86,6 +88,20 @@ test("real families still resolve, and an unknown positional is not a family", (
   const parsed = parseArgs(["claude", "codex", "--status"]);
   assert.deepEqual(parsed.positionals, ["claude", "codex"]);
   assert.deepEqual(parsed.unknown, []);
+});
+
+test("GitHub Actions positional aliases resolve to one explicit family", () => {
+  for (const alias of ["github-actions", "gh", "actions"]) {
+    assert.deepEqual(resolveFamilies([alias]), { families: ["github-actions"], unknown: [], explicit: true });
+  }
+  assert.deepEqual(resolveFamilies(["gh", "actions"]).families, ["github-actions"]);
+});
+
+test("enabledFamilies keeps the default set stable and adds GitHub Actions only by consent", () => {
+  assert.deepEqual(enabledFamilies({ env: {} }), ["claude", "codex", "antigravity", "opencode-go"]);
+  assert.deepEqual(enabledFamilies({ env: { PI_QUOTA_GITHUB_ACTIONS: "true" } }), FAMILIES);
+  const explicit = resolveFamilies(["github-actions"]);
+  assert.deepEqual(enabledFamilies({ env: {}, requested: [...explicit.families], explicit: explicit.explicit }), ["github-actions"]);
 });
 
 /**

@@ -58,6 +58,7 @@ shuvquota, and it never writes to a credential file.
 | Codex | `openai-codex.access` + `accountId` | `GET chatgpt.com/backend-api/wham/usage` | ✅ 5h + weekly + plan |
 | Antigravity | `antigravity.access` + `projectId` | `POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` | ✅ Gemini + Claude/GPT buckets, **with in-memory refresh** |
 | OpenCode Go | opencode.ai session cookie | `GET opencode.ai/workspace/<id>/go` | ✅ weekly + monthly, verified live |
+| GitHub Actions (opt-in) | Authenticated `gh` CLI | `gh api /organizations/<org>/settings/billing/usage/summary?product=Actions` | ✅ org-wide monthly Linux minutes, plan-derived allowance |
 
 Four findings worth recording, each of which cost a wrong hypothesis:
 
@@ -68,10 +69,9 @@ Four findings worth recording, each of which cost a wrong hypothesis:
    validates (`/zen/v1/models` → 200, 70 models) but exposes no usage, and every
    `/api/*` path on opencode.ai returns 404: the Go windows only exist in the
    authenticated SSR page.
-3. **Moshi validates the `agent` field against a closed union of six values**
-   (`claude-code`, `codex`, `opencode`, `kimi`, `grok`, `antigravity`). A custom
-   `"pi"` agent is rejected with HTTP 422, so the Pi provenance is carried by
-   `accountLabel` (`"Codex (Pi)"`) and the card keeps Moshi's own logo.
+3. **Moshi uses native agent IDs for provider logos and accepts `pi` for Pi-owned
+   snapshots.** The `accountLabel` carries the provider name (for example,
+   `"GitHub Actions"`) while the agent ID identifies the Pi publisher.
 4. **Both Claude OAuth stores answer the same endpoint.** Pi's own `anthropic`
    entry and the Claude Code CLI store return identical windows, which is what
    makes the second source a drop-in replacement rather than a separate feature.
@@ -95,6 +95,27 @@ The Claude Code store is opened read-only, and its refresh token is deliberately
 **never carried into memory**: Anthropic rotates refresh tokens, and a rotation
 performed behind the CLI's back would sign the installed `claude` out. Refresh, if
 any, stays the CLI's business.
+
+### GitHub Actions credential source
+
+GitHub Actions does not use a Pi-store credential. Quota requests are delegated to
+GitHub CLI, which owns authentication; piQuota never reads the token value.
+
+| Source | Credential | Why it exists |
+|---|---|---|
+| GitHub CLI | Its authenticated session, or `GH_TOKEN` / `GITHUB_TOKEN` passed to `gh` | Reads organization billing usage without putting the token in piQuota's report or cache. |
+
+Enable the family with `PI_QUOTA_GITHUB_ACTIONS=1` or select it explicitly with
+`piquota github-actions` (`piquota gh` and `piquota actions` are aliases). Use
+`gh auth login` if the CLI is not authenticated; organization billing access and
+the `read:org`, `repo`, and `workflow` scopes may be required.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PI_QUOTA_GITHUB_ACTIONS` | off | Enables the family for default runs; truthy values are `1`, `true`, `yes`, and `on`. |
+| `PI_QUOTA_GITHUB_ORG` | `KoralisSoft` | Organization queried for its plan and usage. |
+| `PI_QUOTA_GITHUB_ACTIONS_MINUTES` | plan-derived | Positive integer monthly allowance override; unsupported plans require this setting. |
+| `PI_QUOTA_GITHUB_ACTIONS_REPOS` | empty | Optional comma-separated repo names used only to filter attribution; quota remains org-wide. |
 
 ## Prerequisites & Installation
 
@@ -135,6 +156,7 @@ is reachable again.
 ```bash
 piquota                 # boxed panel: ring, bar, % left, "reset in 3h 12m"
 piquota claude codex    # only these families
+piquota github-actions  # GitHub Actions minutes (explicit opt-in; aliases: gh, actions)
 piquota --json          # normalized report
 piquota --compact       # one line per provider
 piquota --status        # single line with rings, for status bars
@@ -366,9 +388,9 @@ Authorization: Bearer secret_<host-secret>
                windows:[{label,usedPercentage,resetsAt}]}]}
 ```
 
-`accountLabel` is `"Claude (Pi)"`, `"Codex (Pi)"`, `"Antigravity (Pi)"`,
-`"OpenCode Go (Pi)"`. Only percentages, window labels, reset timestamps and plan
-names are sent — never a credential or an e-mail address.
+`accountLabel` identifies the provider, including `"GitHub Actions"` when enabled.
+Only percentages, window labels, reset timestamps and plan names are sent — never
+a credential or an e-mail address.
 
 The publisher respects moshi-hook's own `usage_collection` setting: if you turn
 collection off, `moshi watch` pauses instead of pushing behind your back. The one
@@ -440,6 +462,7 @@ src/browser/history.js         workspace ids recovered from a copied places.sqli
 src/opencode/session.js        cookie + workspace resolution, dashboard fetch
 src/opencode/dashboard.js      three-strategy parser for the Go plan page
 src/providers/*.js             one file per provider; each degrades instead of throwing
+src/providers/github-actions.js  plan-derived org Actions minutes via authenticated gh CLI
 src/providers/antigravity-oauth.js  in-memory refresh with Google's public client
 src/providers/backoff.js       per-family throttle state
 src/moshi/client.js            paired-host publisher
@@ -456,7 +479,7 @@ src/omarchy/record.js          pure mapping from the report to Omarchy usage rec
 src/omarchy/publish.js         atomic writer for pi-*.json, and stale-record cleanup
 src/refresh.js                 per-family refresh clocks, and the merge back into one report
 src/cli/args.js                argument parsing, and the flag/positional split
-src/exec.js                    the one place that spawns a foreign binary
+src/exec.js                    the one place that spawns gh and moshi-hook binaries
 src/http.js                    fetch wrapper: timeouts, JSON, redaction
 contrib/systemd/               user service and timer behind `install.sh --omarchy-timer`
 bin/piquota.js                 the only CLI
@@ -488,16 +511,16 @@ extensions/moshi-approvals.ts  mirrors Pi's approval prompts to the phone
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 271 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 289 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store
 (including that the refresh token never leaves it and that reading leaves the file
-byte-identical), Claude source precedence, the four providers (including the two
-Antigravity failures and the OpenCode degradation), the dashboard parser's three
+byte-identical), Claude source precedence, the five providers (including GitHub
+Actions plan resolution, opt-in gating and degradation, the two Antigravity
+failures and the OpenCode degradation), the dashboard parser's three
 strategies, the Firefox cookie reader against a synthetic SQLite database, the
-Antigravity refresh (in-memory only), the Moshi takeover and daemon-restart
-helpers, the Moshi payload/redaction/transport, the Omarchy record mapping and atomic writer, the renderers, the Pi
+Antigravity refresh (in-memory only), the Mose Moshi payload/redaction/transport, the Omarchy record mapping and atomic writer, the renderers, the Pi
 extension contract, the approval mirror (through a real Unix socket), the per-family
 refresh clocks, argument parsing including the two silent defects it once hid, and the
 structure of these documents themselves (tables, fences, links, anchors).

@@ -38,6 +38,11 @@ const NATIVE_AGENT = {
   "opencode-go": "opencode",
 };
 
+/** Labels are kept explicit because Moshi's agent union has no GitHub Actions id. */
+const FAMILY_LABEL = {
+  "github-actions": "GitHub Actions",
+};
+
 /**
  * @param {{ env?: Record<string, string | undefined>, home?: string, stateDir?: string }} [options]
  * @returns {{ stateDir: string, secretsPath: string }}
@@ -145,7 +150,7 @@ export function buildUsagePayload(report, options = {}) {
     seen.set(provider.family, count);
     snapshots.push({
       accountId: count === 1 ? `pi:${provider.family}` : `pi:${provider.family}:${count}`,
-      accountLabel: provider.label,
+      accountLabel: FAMILY_LABEL[provider.family] ?? provider.label,
       agent: agentMode === "native" ? NATIVE_AGENT[provider.family] ?? PI_AGENT : PI_AGENT,
       hostName: options.hostName ?? hostname(),
       capturedAt: secondPrecision(report.generatedAt),

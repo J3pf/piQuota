@@ -33,6 +33,7 @@ export const LABEL_BY_FAMILY = {
   claude: "Claude (Pi)",
   antigravity: "Antigravity (Pi)",
   "opencode-go": "OpenCode Go (Pi)",
+  "github-actions": "GitHub Actions",
 };
 
 const WINDOWS_USERS_ROOT = "/mnt/c/Users";

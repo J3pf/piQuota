@@ -13,7 +13,15 @@ import { collectQuota } from "../src/engine.js";
 import { clearCache, readCache, withCache, writeCache } from "../src/cache.js";
 import { buildArtifact, writeArtifact } from "../src/moshi/artifact.js";
 import { readUsageCollection } from "../src/moshi/settings.js";
-import { antigravityUsageBody, claudeUsageBody, codexUsageBody, jsonResponse, routedFetch } from "./helpers.mjs";
+import {
+  antigravityUsageBody,
+  claudeUsageBody,
+  codexUsageBody,
+  githubActionsSummaryBody,
+  githubActionsUsageBody,
+  jsonResponse,
+  routedFetch,
+} from "./helpers.mjs";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-auth.json", import.meta.url));
 const NOW = 1_800_000_000_000;
@@ -27,11 +35,29 @@ function fullRoutes() {
   ]);
 }
 
-test("collectQuota reports all four families from the Pi store", async () => {
+test("collectQuota reports all five registered families when GitHub Actions is enabled", async () => {
   const { fetchFn } = fullRoutes();
-  const report = await collectQuota({ paths: [FIXTURE], claudeCodePaths: [], now: NOW, fetchFn, env: {}, stores: [], allowBrowser: false });
+  const runCommand = (_command, args) => {
+    const path = args.at(-1);
+    const body = path.startsWith("/orgs/")
+      ? { login: "KoralisSoft", plan: { name: "free" } }
+      : path.includes("/usage/summary")
+        ? githubActionsSummaryBody()
+        : githubActionsUsageBody();
+    return { status: 0, stdout: JSON.stringify(body), stderr: "", error: null };
+  };
+  const report = await collectQuota({
+    paths: [FIXTURE],
+    claudeCodePaths: [],
+    now: NOW,
+    fetchFn,
+    runCommand,
+    env: { PI_QUOTA_GITHUB_ACTIONS: "1", PI_QUOTA_GITHUB_ACTIONS_MINUTES: "2000" },
+    stores: [],
+    allowBrowser: false,
+  });
 
-  assert.deepEqual(Object.keys(report.byFamily).sort(), ["antigravity", "claude", "codex", "opencode-go"]);
+  assert.deepEqual(Object.keys(report.byFamily).sort(), ["antigravity", "claude", "codex", "github-actions", "opencode-go"]);
   assert.equal(report.readOnly, true);
   assert.equal(report.schemaVersion, 1);
 
@@ -42,6 +68,7 @@ test("collectQuota reports all four families from the Pi store", async () => {
   assert.equal(byFamily.antigravity.ok, true);
   assert.equal(byFamily["opencode-go"].ok, false);
   assert.match(byFamily["opencode-go"].error ?? "", /piquota auth opencode/);
+  assert.equal(byFamily["github-actions"].ok, true);
 });
 
 test("collectQuota marks a family with no credential as degraded, not missing", async () => {
@@ -79,9 +106,32 @@ test("a crashing provider degrades instead of taking the report down", async () 
 
 test("the normalized report never contains token material", async () => {
   const { fetchFn } = fullRoutes();
-  const report = await collectQuota({ paths: [FIXTURE], claudeCodePaths: [], now: NOW, fetchFn, env: {}, stores: [], allowBrowser: false });
+  const githubSecret = "ghp_FAKE_ENGINE_GITHUB_TOKEN_0123456789";
+  const runCommand = (_command, args) => {
+    const path = args.at(-1);
+    const body = path.includes("/usage/summary")
+      ? { ...githubActionsSummaryBody(), debugToken: githubSecret }
+      : githubActionsUsageBody([
+          { product: "actions", sku: "actions_linux", quantity: 52, unitType: "minutes", repositoryName: githubSecret },
+        ]);
+    return { status: 0, stdout: JSON.stringify(body), stderr: "", error: null };
+  };
+  const report = await collectQuota({
+    paths: [FIXTURE],
+    claudeCodePaths: [],
+    now: NOW,
+    fetchFn,
+    runCommand,
+    env: {
+      PI_QUOTA_GITHUB_ACTIONS: "on",
+      PI_QUOTA_GITHUB_ACTIONS_MINUTES: "2000",
+      GITHUB_TOKEN: githubSecret,
+    },
+    stores: [],
+    allowBrowser: false,
+  });
   const serialized = JSON.stringify(report);
-  for (const secret of ["sk-ant-oat01", "ya29.", "1//FAKE", "rt.1.FAKE", "sk-FAKE-zen", "fixture-signature"]) {
+  for (const secret of ["sk-ant-oat01", "ya29.", "1//FAKE", "rt.1.FAKE", "sk-FAKE-zen", "fixture-signature", githubSecret]) {
     assert.equal(serialized.includes(secret), false, `report leaked ${secret}`);
   }
 });

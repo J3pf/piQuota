@@ -1,12 +1,11 @@
 /**
- * The one place that spawns a foreign binary.
+ * The one place that spawns foreign binaries.
  *
- * piQuota is a read-only observer, and the only external command it ever runs is
- * moshi-hook's own CLI, to change moshi-hook's own setting the supported way
- * instead of editing its config file. Everything else is HTTP and file reads.
- *
- * A missing binary must degrade, not throw: `spawnSync` reports ENOENT through
- * `error` with a null status, and callers here treat both as failure.
+ * piQuota delegates GitHub API requests to the user's authenticated `gh` CLI and
+ * uses moshi-hook's own CLI to change its usage-collection setting through the
+ * supported interface rather than editing its config file. Callers must degrade
+ * on missing binaries, non-zero exits and timeouts; external commands must never
+ * make quota collection throw.
  */
 
 import { spawnSync } from "node:child_process";
