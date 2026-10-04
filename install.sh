@@ -12,6 +12,8 @@
 #   4. symlinks ~/.local/bin/piquota
 #   5. installs extensions/*.ts into ~/.pi/agent/extensions
 #   6. cleans up obsolete shims if upgrading from previous versions
+#   7. with --omarchy-timer, installs a systemd user timer that runs
+#      `piquota omarchy` every 5 minutes (opt-in)
 
 set -euo pipefail
 
@@ -34,19 +36,26 @@ PREFIX="${PI_QUOTA_PREFIX:-$HOME/.local/share/pi-quota}"
 BIN_DIR="${PI_QUOTA_BIN_DIR:-$HOME/.local/bin}"
 EXT_DIR="${PI_QUOTA_EXT_DIR:-$HOME/.pi/agent/extensions}"
 MODE="copy"
+OMARCHY_TIMER=false
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 for arg in "$@"; do
   case "$arg" in
     --link) MODE="link" ;;
     --copy) MODE="copy" ;;
     --uninstall) MODE="uninstall" ;;
+    --omarchy-timer) OMARCHY_TIMER=true ;;
     -h|--help)
       cat <<'USAGE'
-Usage: ./install.sh [--copy|--link|--uninstall]
+Usage: ./install.sh [--copy|--link|--uninstall] [--omarchy-timer]
 
   --copy       Copy the project into ~/.local/share/pi-quota (default)
   --link       Symlink the project instead, for development
-  --uninstall  Remove the installed tree, the piquota shim and the Pi extension
+  --uninstall  Remove the installed tree, the piquota shim, the Pi extension and the
+               Omarchy timer (its pi-*.json records are removed too)
+  --omarchy-timer
+               Also install and enable a systemd user timer that runs `piquota omarchy`
+               every 5 minutes, so Omarchy's Agents panel shows every piQuota provider
 
 Environment overrides: PI_QUOTA_PREFIX, PI_QUOTA_BIN_DIR, PI_QUOTA_EXT_DIR
 USAGE
@@ -70,8 +79,13 @@ if [[ "$MODE" == "uninstall" ]]; then
   if command -v systemctl >/dev/null 2>&1; then
     systemctl --user disable --now pi-quota-moshi.service >/dev/null 2>&1 || true
     rm -f "$HOME/.config/systemd/user/pi-quota-moshi.service"
+    systemctl --user disable --now piquota-omarchy.timer >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/piquota-omarchy.timer" "$UNIT_DIR/piquota-omarchy.service"
     systemctl --user daemon-reload >/dev/null 2>&1 || true
   fi
+  # Only the pi-*.json records piQuota wrote; Omarchy's own records stay.
+  OMARCHY_DIR="${PI_QUOTA_OMARCHY_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage}"
+  rm -f "$OMARCHY_DIR"/pi-*.json
   rm -f "$BIN_DIR/piquota" "$BIN_DIR/shuvquota"
   rm -f "$EXT_DIR/quota-panel.ts" "$EXT_DIR/moshi-approvals.ts"
   # The rail slot only exists for the extension that reads it, so leaving it behind
@@ -247,6 +261,26 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 
+# --- Omarchy Agents panel timer (opt-in) ---
+if [[ "$OMARCHY_TIMER" == "true" ]]; then
+  if ! command -v systemctl >/dev/null 2>&1; then
+    warn "systemctl not found: the Omarchy timer needs systemd. Run \`piquota omarchy\` from your own scheduler."
+  else
+    mkdir -p "$UNIT_DIR"
+    # The shipped unit uses %h/.local/bin; follow PI_QUOTA_BIN_DIR when it differs.
+    sed "s|^ExecStart=.*|ExecStart=$BIN_DIR/piquota omarchy|" "$HERE/contrib/systemd/piquota-omarchy.service" > "$UNIT_DIR/piquota-omarchy.service"
+    cp "$HERE/contrib/systemd/piquota-omarchy.timer" "$UNIT_DIR/piquota-omarchy.timer"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    if systemctl --user enable --now piquota-omarchy.timer >/dev/null 2>&1; then
+      ok "Omarchy timer enabled: piquota-omarchy.timer (every 5 minutes)"
+      log "Omarchy ships its own claude/codex records; to avoid duplicates, hide them with:"
+      log "  omarchy bar set omarchy.agents providers ..."
+    else
+      warn "could not enable piquota-omarchy.timer; run: systemctl --user enable --now piquota-omarchy.timer"
+    fi
+  fi
+fi
+
 echo
 echo "--- Diagnostics & Integrations ---"
 case ":$PATH:" in
@@ -311,6 +345,7 @@ log "piquota --explain      # verify credential store resolution"
 log "piquota                # test the CLI panel"
 log "piquota auth status    # check OpenCode Go session discovery"
 log "piquota moshi status   # check Moshi integration status"
+log "piquota omarchy       # write the Omarchy Agents panel records once (see --omarchy-timer)"
 log "piquota moshi takeover # make piQuota the only usage publisher (removes duplicate cards)"
 log "/quota                 # reload or start Pi and run inside TUI"
 echo

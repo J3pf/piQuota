@@ -77,6 +77,7 @@ Any modification to this codebase MUST uphold these non-negotiable guarantees:
 4. **Filesystem Boundaries**:
    - Caches and state files are restricted to `~/.cache/pi-quota/` and `~/.local/state/pi-quota/`.
    - File writes must be atomic (write to temporary file, then `renameSync`).
+   - Explicit opt-in exception: `piquota omarchy` may write (and remove stale) `pi-*.json` records, and only those, in Omarchy's agents usage directory (`${XDG_STATE_HOME:-~/.local/state}/omarchy/agents/usage/` or `PI_QUOTA_OMARCHY_DIR`), atomically. Records contain plan names, percentages, window labels and reset times, never tokens or account identifiers. Omarchy's own records are never touched.
 5. **Graceful Degradation**:
    - Provider failures (network timeouts, 401s, 429 rate limits, malformed payloads) must degrade gracefully into typed error states (`isTransient`, `isAuthFailure`, `isThrottled`, `notConfigured`), never throwing unhandled exceptions that crash the CLI or the Pi TUI.
 

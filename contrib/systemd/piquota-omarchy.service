@@ -1,0 +1,8 @@
+[Unit]
+Description=piQuota -> Omarchy Agents panel usage records
+
+[Service]
+Type=oneshot
+# Omarchy ships its own, richer Claude collector; drop the Pi duplicate.
+Environment=PI_QUOTA_OMARCHY_SKIP=claude
+ExecStart=%h/.local/bin/piquota omarchy
