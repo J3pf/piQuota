@@ -32,7 +32,7 @@ import { mergeLastGood } from "../src/moshi/sticky.js";
 import { renderBoxWidget, renderCompact, renderPanel, renderStatusLine } from "../src/render/panel.js";
 import { ansiPalette } from "../src/render/theme.js";
 
-const VERSION = "0.10.0";
+const VERSION = "0.10.1";
 
 const HELP = `piquota ${VERSION} — read-only quota from Pi's provider credentials
 
