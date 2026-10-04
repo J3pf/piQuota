@@ -134,7 +134,7 @@ the `read:org`, `repo`, and `workflow` scopes may be required.
 ### 1-Line Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/J3fp/piQuota/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/J3fp/piQuota/master/install.sh | bash
 ```
 
 ### Manual Install / Development

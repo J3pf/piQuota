@@ -27,7 +27,7 @@ if [[ ! -f "${HERE:-}/package.json" ]]; then
   if command -v git >/dev/null 2>&1; then
     git clone --depth 1 https://github.com/J3fp/piQuota.git "$TMP_DIR" >/dev/null 2>&1
   else
-    curl -fsSL https://github.com/J3fp/piQuota/archive/refs/heads/main.tar.gz | tar -xz -C "$TMP_DIR" --strip-components=1
+    curl -fsSL https://github.com/J3fp/piQuota/archive/refs/heads/master.tar.gz | tar -xz -C "$TMP_DIR" --strip-components=1
   fi
   exec bash "$TMP_DIR/install.sh" "$@"
 fi
