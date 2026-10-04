@@ -29,7 +29,9 @@ jobs:
           # piQuota has zero runtime and dev dependencies, so there is no
           # dependency cache worth keeping. Disabling it removes the cache
           # poisoning surface entirely instead of guarding against it.
-          package-manager-cache: false
+          # The input is `cache`; `package-manager-cache` is not a setup-node
+          # input and GitHub silently ignores unknown keys.
+          cache: false
 
       - name: Run tests
         run: npm test
