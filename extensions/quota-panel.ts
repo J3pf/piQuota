@@ -24,7 +24,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // `mergeLastGood` is intentionally NOT imported here: it lives in src/moshi/sticky.js
 // and the CLI (`bin/piquota.js`) already applies it on every `--json` run, so the
@@ -146,8 +146,18 @@ function usedOf(window: QuotaWindow | null): number | null {
 function resolveCliPath(): string | null {
   const override = process.env.PI_QUOTA_BIN;
   if (override && existsSync(override)) return override;
-  const installed = join(homedir(), ".local", "share", "pi-quota", "bin", "piquota.js");
-  return existsSync(installed) ? installed : null;
+  try {
+    const sibling = fileURLToPath(new URL("../bin/piquota.js", import.meta.url));
+    if (existsSync(sibling)) return sibling;
+  } catch {}
+  for (const candidate of [
+    join(homedir(), ".local", "share", "pi-quota", "bin", "piquota.js"),
+    join(homedir(), ".local", "bin", "piquota"),
+    join(homedir(), ".pi", "agent", "npm", "node_modules", "@j3pf", "piquota", "bin", "piquota.js"),
+  ]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 /**
@@ -721,6 +731,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    // SAFETY: Pi's session context implements UiContext when hasUI is true.
     const ui = ctx as unknown as UiContext;
     if (!ui.hasUI) return;
     disposed = false;
@@ -735,6 +746,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       if (!ui.hasUI || disposed) return;
       void refresh(ui, false);
     }, REFRESH_MS);
+    // SAFETY: Node.js Timer provides unref to prevent hanging process exit.
     (timer as unknown as { unref?: () => void }).unref?.();
   });
 
@@ -746,6 +758,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("agent_end", async (_event, ctx) => {
+    // SAFETY: Pi's agent_end context implements UiContext when hasUI is true.
     const ui = ctx as unknown as UiContext;
     if (!ui.hasUI || disposed) return;
     if (agentEndTimer) clearTimeout(agentEndTimer);
@@ -755,10 +768,12 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       if (!ui.hasUI || disposed) return;
       void refresh(ui, false);
     }, debounceMs);
+    // SAFETY: Node.js Timer provides unref to prevent hanging process exit.
     (agentEndTimer as unknown as { unref?: () => void }).unref?.();
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    // SAFETY: Pi's session_shutdown context implements UiContext when hasUI is true.
     const ui = ctx as unknown as UiContext;
     disposed = true;
     if (timer) {
