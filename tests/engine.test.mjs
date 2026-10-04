@@ -54,6 +54,20 @@ test("collectQuota marks a family with no credential as degraded, not missing", 
   assert.match(grok.error ?? "", /no grok credential/);
 });
 
+test("collectQuota provides actionable diagnosis when Pi store has openai API instead of openai-codex", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-quota-openai-"));
+  const authPath = join(dir, "auth.json");
+  writeFileSync(authPath, JSON.stringify({
+    openai: { type: "oauth", access: "fake-access" }
+  }));
+
+  const report = await collectQuota({ paths: [authPath], claudeCodePaths: [], now: NOW, families: ["codex"], env: {}, stores: [], allowBrowser: false });
+  assert.equal(report.providers.length, 1);
+  assert.equal(report.providers[0].family, "codex");
+  assert.equal(report.providers[0].notConfigured, true);
+  assert.match(report.providers[0].error ?? "", /found 'openai' API; run \/login openai-codex in Pi/);
+});
+
 test("a crashing provider degrades instead of taking the report down", async () => {
   const fetchFn = /** @type {typeof fetch} */ (async () => {
     throw new Error("socket exploded");

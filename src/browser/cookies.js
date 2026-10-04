@@ -7,11 +7,13 @@
  *     temporary directory (including `-wal`/`-shm`) and opened read-only there;
  *   - cookie values are returned to the caller but never logged, printed or
  *     written to the cache;
- *   - nothing is decrypted that the platform does not allow: Chrome on Windows
- *     encrypts cookie values with DPAPI, which is unavailable from WSL, so that
- *     case is reported instead of guessed.
+ *   - Chromium cookie databases are copied before read-only access; Linux OSCrypt
+ *     values are decrypted in memory, while unsupported platform encryption is
+ *     reported instead of guessed.
  */
 
+import { execFileSync } from "node:child_process";
+import { createDecipheriv, pbkdf2Sync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -26,6 +28,7 @@ const WINDOWS_USERS_ROOT = "/mnt/c/Users";
  * @property {string} profile           Human profile label.
  * @property {"plaintext" | "encrypted" | "unknown"} readability
  * @property {string} [note]
+ * @property {string} [app]
  */
 
 /**
@@ -122,7 +125,7 @@ export function parseFirefoxProfiles(root) {
 /**
  * Every readable cookie store, most readable first.
  *
- * @param {{ home?: string, usersRoot?: string, platform?: string }} [options]
+ * @param {{ home?: string, usersRoot?: string, platform?: string, env?: Record<string, string | undefined>, secretTool?: (args: string[]) => string | null }} [options]
  * @returns {CookieStore[]}
  */
 export function discoverCookieStores(options = {}) {
@@ -130,11 +133,9 @@ export function discoverCookieStores(options = {}) {
   const stores = [];
   for (const root of firefoxRoots(options)) {
     for (const profile of parseFirefoxProfiles(root)) {
-      const platformPrefix = root.includes("Application Support")
-        ? "mac"
-        : root.endsWith("Firefox")
-          ? "windows"
-          : "linux";
+      let platformPrefix = "linux";
+      if (root.includes("Application Support")) platformPrefix = "mac";
+      else if (root.endsWith("Firefox")) platformPrefix = "windows";
       stores.push({
         browser: "firefox",
         path: join(profile.dir, "cookies.sqlite"),
@@ -142,6 +143,11 @@ export function discoverCookieStores(options = {}) {
         readability: "plaintext",
       });
     }
+  }
+
+  const platform = options.platform ?? process.platform;
+  if (platform !== "win32" && platform !== "darwin") {
+    for (const store of linuxChromiumStores(options)) stores.push(store);
   }
 
   // Chromium on Windows encrypts values with DPAPI; surface it so the user gets
@@ -167,6 +173,59 @@ export function discoverCookieStores(options = {}) {
   return stores;
 }
 
+const LINUX_CHROMIUM_BROWSERS = [
+  { directory: "google-chrome", label: "Google Chrome", app: "chrome" },
+  { directory: "google-chrome-beta", label: "Google Chrome Beta", app: "chrome" },
+  { directory: "google-chrome-unstable", label: "Google Chrome Unstable", app: "chrome" },
+  { directory: "chromium", label: "Chromium", app: "chromium" },
+  { directory: "microsoft-edge", label: "Microsoft Edge", app: "microsoft-edge" },
+  { directory: "microsoft-edge-dev", label: "Microsoft Edge Dev", app: "microsoft-edge" },
+  { directory: "BraveSoftware/Brave-Browser", label: "Brave", app: "brave" },
+];
+
+/**
+ * @param {{ home?: string, env?: Record<string, string | undefined>, secretTool?: (args: string[]) => string | null }} [options]
+ * @returns {CookieStore[]}
+ */
+function linuxChromiumStores(options = {}) {
+  const home = options.home ?? homedir();
+  const env = options.env ?? process.env;
+  const configRoot = env.XDG_CONFIG_HOME || join(home, ".config");
+  /** @type {CookieStore[]} */
+  const stores = [];
+  const seen = new Set();
+
+  for (const browser of LINUX_CHROMIUM_BROWSERS) {
+    const browserDir = join(configRoot, browser.directory);
+    if (!existsSync(browserDir)) continue;
+    const profiles = ["Default"];
+    try {
+      profiles.push(...readdirSync(browserDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith("Profile "))
+        .map((entry) => entry.name));
+    } catch {
+      // A browser directory may disappear while discovery is running.
+    }
+
+    for (const profile of profiles) {
+      for (const relative of [join(profile, "Cookies"), join(profile, "Network", "Cookies")]) {
+        const dbPath = join(browserDir, relative);
+        if (seen.has(dbPath) || !existsSync(dbPath)) continue;
+        seen.add(dbPath);
+        const status = chromiumStoreReadability(dbPath, browser.app, options);
+        stores.push({
+          browser: "chromium",
+          path: dbPath,
+          profile: `linux:${browser.label}/${profile}`,
+          app: browser.app,
+          ...status,
+        });
+      }
+    }
+  }
+  return stores;
+}
+
 /**
  * @param {{ usersRoot?: string, platform?: string }} [options]
  * @returns {string[]}
@@ -187,6 +246,144 @@ function windowsChromiumRoots(options = {}) {
     return [];
   }
   return roots;
+}
+
+const secretStoragePasswords = new Map();
+
+/**
+ * Look up the Linux Chromium Safe Storage password without exposing it outside
+ * this process. Both common Secret Service attributes are attempted.
+ *
+ * @param {string} app
+ * @param {{ secretTool?: (args: string[]) => string | null }} [options]
+ * @returns {string | null}
+ */
+function linuxChromiumPassword(app, options = {}) {
+  const candidates = [app];
+  if (app !== "chromium") candidates.push("chromium");
+  if (app !== "chrome") candidates.push("chrome");
+
+  if (typeof options.secretTool === "function") {
+    for (const candidate of candidates) {
+      for (const args of [
+        ["lookup", "application", candidate],
+        ["lookup", "service", `${candidate} Safe Storage`],
+      ]) {
+        try {
+          const value = options.secretTool(args)?.replace(/[\r\n]+$/, "");
+          if (value) return value;
+        } catch {
+          // Try the alternate Secret Service attribute.
+        }
+      }
+    }
+    return null;
+  }
+  if (secretStoragePasswords.has(app)) return secretStoragePasswords.get(app);
+
+  let password = null;
+  for (const candidate of candidates) {
+    for (const args of [
+      ["lookup", "application", candidate],
+      ["lookup", "service", `${candidate} Safe Storage`],
+    ]) {
+      try {
+        const value = execFileSync("secret-tool", args, {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 2000,
+        }).replace(/[\r\n]+$/, "");
+        if (value.length > 0) {
+          password = value;
+          break;
+        }
+      } catch {
+        // Missing secret-tool, locked keyrings and absent entries are expected.
+      }
+    }
+    if (password) break;
+  }
+  secretStoragePasswords.set(app, password);
+  return password;
+}
+
+/**
+ * Decrypt a Linux Chromium OSCrypt cookie value. The `password` option allows
+ * callers/tests to supply an already-resolved Safe Storage password.
+ *
+ * @param {Buffer | Uint8Array} encryptedValue
+ * @param {{ app?: string, password?: string | null, secretTool?: (args: string[]) => string | null }} [options]
+ * @returns {string | null}
+ */
+export function decryptLinuxChromiumCookie(encryptedValue, options = {}) {
+  const encrypted = Buffer.from(encryptedValue);
+  const version = encrypted.subarray(0, 3).toString("ascii");
+  if ((version !== "v10" && version !== "v11") || encrypted.length <= 3) return null;
+
+  let password;
+  if (version === "v10") password = "peanuts";
+  else if (Object.hasOwn(options, "password")) password = options.password;
+  else password = linuxChromiumPassword(options.app ?? "chromium", options);
+  if (typeof password !== "string" || password.length === 0) return null;
+
+  try {
+    const key = pbkdf2Sync(password, "saltysalt", 1, 16, "sha1");
+    const decipher = createDecipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
+    const decrypted = Buffer.concat([decipher.update(encrypted.subarray(3)), decipher.final()]);
+    const payload = version === "v11" ? decrypted.subarray(32) : decrypted;
+    if (payload.length === 0) return null;
+    if (version === "v11") {
+      const knownPrefix = payload.subarray(0, 6).toString("ascii").startsWith("Fe26.2")
+        || payload.subarray(0, 3).toString("ascii") === "st_";
+      if (!knownPrefix && !isPrintableAscii(payload)) return null;
+    }
+    return payload.toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** @param {Buffer} bytes */
+function isPrintableAscii(bytes) {
+  return bytes.length > 0 && bytes.every((byte) => byte >= 0x20 && byte <= 0x7e);
+}
+
+/**
+ * Decide whether the encrypted values in a Linux Chromium database are
+ * supported by this process. v10 uses the documented legacy password; v11
+ * requires a password from the browser's Secret Service entry.
+ *
+ * @param {string} dbPath
+ * @param {string} app
+ * @param {{ secretTool?: (args: string[]) => string | null }} [options]
+ * @returns {{ readability: "plaintext" | "encrypted", note?: string }}
+ */
+function chromiumStoreReadability(dbPath, app, options = {}) {
+  const copy = withCopy(dbPath);
+  let database;
+  try {
+    database = new DatabaseSync(copy.db, { readOnly: true });
+    const rows = database.prepare("select encrypted_value from cookies where encrypted_value is not null and length(encrypted_value) > 0").all();
+    for (const row of rows) {
+      const encrypted = Buffer.from(row.encrypted_value);
+      const version = encrypted.subarray(0, 3).toString("ascii");
+      if (version === "v10") continue;
+      if (version === "v11" && linuxChromiumPassword(app, options)) continue;
+      return {
+        readability: "encrypted",
+        note: "Chromium OSCrypt cookies need a supported v10 value or an unlocked Secret Service Safe Storage entry for this browser.",
+      };
+    }
+    return { readability: "plaintext" };
+  } catch {
+    return {
+      readability: "encrypted",
+      note: "Chromium cookie database could not be inspected; its encrypted values may require the browser's Secret Service Safe Storage entry.",
+    };
+  } finally {
+    try { database?.close(); } catch {}
+    copy.cleanup();
+  }
 }
 
 const activeCookieCleanups = new Set();
@@ -281,6 +478,33 @@ export function readFirefoxCookies(dbPath, query) {
 }
 
 /**
+ * Query Chromium's `cookies` table from a private database copy.
+ *
+ * @param {string} dbPath
+ * @param {{ hostLike: string, name?: string }} query
+ * @returns {Array<{ host: string, name: string, value: string, encrypted_value: Buffer, path: string }>}
+ */
+function readChromiumCookies(dbPath, query) {
+  const copy = withCopy(dbPath);
+  let database;
+  try {
+    database = new DatabaseSync(copy.db, { readOnly: true });
+    const sql = query.name
+      ? "select host_key as host, name, value, encrypted_value, path from cookies where host_key like ? and name = ?"
+      : "select host_key as host, name, value, encrypted_value, path from cookies where host_key like ?";
+    const rows = query.name
+      ? database.prepare(sql).all(query.hostLike, query.name)
+      : database.prepare(sql).all(query.hostLike);
+    return /** @type {Array<{ host: string, name: string, value: string, encrypted_value: Buffer, path: string }>} */ (rows);
+  } catch {
+    return [];
+  } finally {
+    try { database?.close(); } catch {}
+    copy.cleanup();
+  }
+}
+
+/**
  * Find one cookie across every readable store.
  *
  * @param {{
@@ -290,6 +514,7 @@ export function readFirefoxCookies(dbPath, query) {
  *   home?: string,
  *   usersRoot?: string,
  *   platform?: string,
+ *   secretTool?: (args: string[]) => string | null,
  * }} options
  * @returns {{
  *   found: boolean,
@@ -306,9 +531,22 @@ export function findCookie(options) {
 
   for (const store of readable) {
     scanned += 1;
-    const rows = readFirefoxCookies(store.path, { hostLike: `%${options.host}%`, name: options.name });
-    const match = rows.find((row) => row.value && row.value.length > 0);
-    if (match) return { found: true, value: match.value, store, candidates: scanned, encryptedOnly: false };
+    const query = { hostLike: `%${options.host}%`, name: options.name };
+    const rows = store.browser === "firefox"
+      ? readFirefoxCookies(store.path, query)
+      : readChromiumCookies(store.path, query);
+    for (const row of rows) {
+      if (row.value && row.value.length > 0) {
+        return { found: true, value: row.value, store, candidates: scanned, encryptedOnly: false };
+      }
+      if (store.browser === "chromium" && row.encrypted_value?.length > 0) {
+        const value = decryptLinuxChromiumCookie(row.encrypted_value, {
+          app: store.app ?? "chromium",
+          secretTool: options.secretTool,
+        });
+        if (value) return { found: true, value, store, candidates: scanned, encryptedOnly: false };
+      }
+    }
   }
 
   return {

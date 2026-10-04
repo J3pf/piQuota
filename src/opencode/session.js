@@ -110,21 +110,44 @@ export function resolveCookie(options = {}) {
 
   const stores = options.stores ?? discoverCookieStores(options);
   let lastHit = null;
-  for (const name of OPENCODE_COOKIE_NAMES) {
-    const hit = findCookie({ host: OPENCODE_COOKIE_HOST, name, stores, home: options.home });
-    if (hit.found) {
+  let partialMatch = null;
+  for (const store of stores) {
+    if (store.readability === "encrypted") {
+      lastHit = findCookie({ host: OPENCODE_COOKIE_HOST, name: OPENCODE_COOKIE_NAME, stores: [store], home: options.home, secretTool: options.secretTool });
+      continue;
+    }
+    const hits = {};
+    for (const name of OPENCODE_COOKIE_NAMES) {
+      const hit = findCookie({ host: OPENCODE_COOKIE_HOST, name, stores: [store], home: options.home, secretTool: options.secretTool });
+      if (hit.found && hit.value) {
+        hits[name] = hit.value;
+      }
+      lastHit = hit;
+    }
+    if (hits[OPENCODE_COOKIE_NAME] && hits["__Host-console_session"]) {
       return {
         found: true,
-        value: hit.value,
+        value: `__Host-console_session=${hits["__Host-console_session"]}; ${OPENCODE_COOKIE_NAME}=${hits[OPENCODE_COOKIE_NAME]}`,
         origin: "browser",
-        detail: hit.store ? `${hit.store.browser} ${hit.store.profile}` : "browser",
+        detail: `${store.browser} ${store.profile}`,
         encryptedOnly: false,
         storeCount: stores.length,
-        name,
       };
     }
-    lastHit = hit;
+    if (!partialMatch && (hits[OPENCODE_COOKIE_NAME] || hits["__Host-console_session"])) {
+      const cookieName = hits[OPENCODE_COOKIE_NAME] ? OPENCODE_COOKIE_NAME : "__Host-console_session";
+      partialMatch = {
+        found: true,
+        value: `${cookieName}=${hits[cookieName]}`,
+        origin: "browser",
+        detail: `${store.browser} ${store.profile}`,
+        encryptedOnly: false,
+        storeCount: stores.length,
+        name: cookieName,
+      };
+    }
   }
+  if (partialMatch) return partialMatch;
 
   const hit = lastHit ?? { encryptedOnly: false, candidates: 0 };
   return {

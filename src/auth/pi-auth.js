@@ -285,7 +285,7 @@ export function readAuthStore(path) {
     const credential = normalizeCredential(provider, /** @type {Record<string, unknown>} */ (entry), path);
     if (credential) credentials.push(credential);
   }
-  return { credentials, warnings };
+  return { credentials, warnings, rawProviders: Object.keys(parsed) };
 }
 
 /**
@@ -310,11 +310,14 @@ export function loadPiCredentials(options = {}) {
   const usedPaths = [];
   /** @type {Set<string>} */
   const seen = new Set();
+  /** @type {Set<string>} */
+  const rawProviders = new Set();
 
   for (const path of paths) {
     const result = readAuthStore(path);
     warnings.push(...result.warnings);
     if (result.credentials.length > 0) usedPaths.push(path);
+    for (const p of result.rawProviders ?? []) rawProviders.add(p);
     for (const credential of result.credentials) {
       const key = `${credential.family}:${credential.identity}`;
       if (seen.has(key)) continue;
@@ -324,7 +327,7 @@ export function loadPiCredentials(options = {}) {
   }
 
   credentials.sort((a, b) => a.family.localeCompare(b.family));
-  return { credentials, paths: usedPaths, warnings };
+  return { credentials, paths: usedPaths, warnings, rawProviders: Array.from(rawProviders) };
 }
 
 /**

@@ -11,7 +11,7 @@ Field **names** only; values never appear in code, logs, tests or artifacts.
 | Pi store (WSL) | `/mnt/c/Users/<profile>/.pi/agent/auth.json` | read-only, auto-discovered, de-duplicated against the Linux store |
 | Claude Code CLI store | `$PI_QUOTA_CLAUDE_CODE_CREDENTIALS`, else `$CLAUDE_CONFIG_DIR/.credentials.json`, else `$HOME/.claude/.credentials.json` | read-only (`flag: "r"`); the second Claude source |
 | Claude Code profile | `$CLAUDE_CONFIG_DIR/.claude.json`, else `$HOME/.claude.json` | read-only; only `oauthAccount.emailAddress`, `displayName` and `organizationType` are read, never project history |
-| opencode.ai session | `OPENCODE_GO_AUTH_COOKIE`, else `~/.config/pi-quota/opencode-cookie`, else a local Firefox cookie database | read-only; browser databases are copied to a temp dir first |
+| opencode.ai session | `OPENCODE_GO_AUTH_COOKIE`, else `~/.config/pi-quota/opencode-cookie`, else a local browser cookie database (Firefox, or Chromium/Chrome/Edge/Brave on Linux) | read-only; browser databases are copied to a temp dir first |
 | Moshi host secret | `~/.local/state/moshi/secrets.json` | read-only; `host-secret` is sent only as a Bearer header to the paired host |
 
 Nothing else is read. `~/.shuvquota.env` is no longer used: the project does not
@@ -132,7 +132,7 @@ credential is needed: the `auth` cookie for `opencode.ai`.
 | --- | --- |
 | Where it is read from | environment → `~/.config/pi-quota/opencode-cookie` (0600) → live browser store |
 | How the browser store is read | the database (plus `-wal`/`-shm`) is copied to a private temp dir and opened read-only; the browser's own file is never opened by us |
-| Which browsers work | Firefox anywhere (plaintext). Chromium on **Windows** encrypts values with DPAPI, which WSL cannot use, so those stores are reported as `ENCRYPTED` |
+| Which browsers work | Firefox anywhere (plaintext). Chromium, Google Chrome, Microsoft Edge, and Brave on **Linux** (decrypted in memory via Secret Service / libsecret or v10 peanuts fallback). Chromium on **Windows** encrypts values with DPAPI, which WSL cannot use, so those stores are reported as `ENCRYPTED` |
 | Logged? | never; the cookie is not printed, cached, or written anywhere except that 0600 file when explicitly pasted |
 | Workspace id | discovered from the authenticated workspace page and cached in `~/.config/pi-quota/opencode-workspace` (not a secret) |
 

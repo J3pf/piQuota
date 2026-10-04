@@ -177,6 +177,8 @@ export async function collectQuota(options = {}) {
   /** @type {Record<string, string[]>} */
   const familyWarnings = {};
 
+  const hasOpenAi = loaded.rawProviders?.includes("openai") || Boolean(env.OPENAI_API_KEY);
+
   await Promise.all(
     families.map(async (family) => {
       const credentials = credentialsFor(family);
@@ -188,7 +190,7 @@ export async function collectQuota(options = {}) {
           degradedResult({
             family,
             label: LABEL_BY_FAMILY[family] ?? family,
-            error: claude.unavailable && family === "claude" ? claude.unavailable : missingCredentialMessage(family),
+            error: claude.unavailable && family === "claude" ? claude.unavailable : missingCredentialMessage(family, { hasOpenAi }),
             notConfigured: true,
             source: loaded.paths[0] ?? resolveAuthPaths({ env, home: options.home })[0] ?? "~/.pi/agent/auth.json",
             now,
@@ -315,12 +317,17 @@ export async function collectQuota(options = {}) {
 
 /**
  * @param {string} family
+ * @param {{ hasOpenAi?: boolean }} [context]
  * @returns {string}
  */
-function missingCredentialMessage(family) {
-  return family === "claude"
-    ? "no claude credential in the Pi store or from the Claude Code CLI"
-    : `no ${family} credential in the Pi store`;
+function missingCredentialMessage(family, context = {}) {
+  if (family === "claude") {
+    return "no claude credential in the Pi store or from the Claude Code CLI";
+  }
+  if (family === "codex" && context.hasOpenAi) {
+    return "no codex credential in the Pi store (found 'openai' API; run /login openai-codex in Pi for subscription quota)";
+  }
+  return `no ${family} credential in the Pi store`;
 }
 
 /**

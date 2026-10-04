@@ -3,6 +3,7 @@
  */
 
 import assert from "node:assert/strict";
+import { createCipheriv, pbkdf2Sync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,10 +11,151 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { findWorkspaceIds, htmlToText, parseGoDashboard, parseGoMeters, parsePercent, parseResetSeconds } from "../src/opencode/dashboard.js";
-import { discoverCookieStores, readFirefoxCookies } from "../src/browser/cookies.js";
+import { decryptLinuxChromiumCookie, discoverCookieStores, findCookie, readFirefoxCookies } from "../src/browser/cookies.js";
 import { configPaths, fetchGoStatusApi, resolveCookie, toCookieHeader, writeSecretFile } from "../src/opencode/session.js";
 
 const NOW = 1_800_000_000_000;
+
+function encryptChromiumCookie(value, { version, password }) {
+  const key = pbkdf2Sync(password, "saltysalt", 1, 16, "sha1");
+  const plaintext = version === "v11"
+    ? Buffer.concat([Buffer.alloc(32, 0x53), Buffer.from(value, "ascii")])
+    : Buffer.from(value, "ascii");
+  const cipher = createCipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
+  return Buffer.concat([Buffer.from(version), cipher.update(plaintext), cipher.final()]);
+}
+
+test("Linux Chromium cookies decrypt v10 peanuts and v11 keyring payloads", () => {
+  const v10 = encryptChromiumCookie("v10-cookie-value", { version: "v10", password: "peanuts" });
+  const v11 = encryptChromiumCookie("st_session-cookie", { version: "v11", password: "keyring-secret" });
+
+  assert.equal(decryptLinuxChromiumCookie(v10), "v10-cookie-value");
+  assert.equal(decryptLinuxChromiumCookie(v11, { app: "chromium", password: "keyring-secret" }), "st_session-cookie");
+  assert.equal(decryptLinuxChromiumCookie(v11, { app: "chromium", password: "" }), null);
+});
+
+test("Linux Chromium v11 lookup resolves Safe Storage through Secret Service", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-quota-chromium-v11-"));
+  const db = join(dir, "Cookies");
+  const writer = new DatabaseSync(db);
+  writer.exec("create table cookies (host_key text, name text, value text, encrypted_value blob, path text)");
+  writer.prepare("insert into cookies values (?, ?, ?, ?, ?)").run(
+    ".opencode.ai", "auth", "", encryptChromiumCookie("st_session-cookie", { version: "v11", password: "keyring-secret" }), "/",
+  );
+  writer.close();
+
+  const lookups = [];
+  const hit = findCookie({
+    host: "opencode.ai",
+    name: "auth",
+    stores: [{ browser: "chromium", path: db, profile: "linux:Chromium/Default", readability: "plaintext", app: "chromium" }],
+    secretTool: (args) => {
+      lookups.push(args);
+      return args[1] === "service" ? "keyring-secret" : null;
+    },
+  });
+  assert.equal(hit.found, true);
+  assert.equal(hit.value, "st_session-cookie");
+  assert.deepEqual(lookups, [
+    ["lookup", "application", "chromium"],
+    ["lookup", "service", "chromium Safe Storage"],
+  ]);
+});
+
+test("resolveCookie combines __Host-console_session and auth cookies when both are present in the same store", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-quota-multi-cookie-"));
+  const db = join(dir, "Cookies");
+  const writer = new DatabaseSync(db);
+  writer.exec("create table cookies (host_key text, name text, value text, encrypted_value blob, path text)");
+  writer.prepare("insert into cookies values (?, ?, ?, ?, ?)").run(".opencode.ai", "auth", "auth-token-val", null, "/");
+  writer.prepare("insert into cookies values (?, ?, ?, ?, ?)").run(".opencode.ai", "__Host-console_session", "session-val", null, "/");
+  writer.close();
+
+  const store = { browser: "chromium", path: db, profile: "linux:Microsoft Edge/Default", readability: "plaintext" };
+  const res = resolveCookie({ env: {}, stores: [store], allowBrowser: true });
+  assert.equal(res.found, true);
+  assert.equal(res.value, "__Host-console_session=session-val; auth=auth-token-val");
+});
+
+test("Linux Chromium discovery reports unreadable v11 stores and marks resolvable stores plaintext", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-linux-v11-"));
+  const config = join(home, "xdg");
+  const db = join(config, "chromium", "Default", "Network", "Cookies");
+  mkdirSync(join(db, ".."), { recursive: true });
+  const writer = new DatabaseSync(db);
+  writer.exec("create table cookies (host_key text, name text, value text, encrypted_value blob, path text)");
+  writer.prepare("insert into cookies values (?, ?, ?, ?, ?)").run(
+    ".opencode.ai", "auth", "", encryptChromiumCookie("st_session-cookie", { version: "v11", password: "keyring-secret" }), "/",
+  );
+  writer.close();
+
+  const options = { home, env: { XDG_CONFIG_HOME: config }, platform: "linux", secretTool: () => null };
+  const locked = discoverCookieStores(options).find((store) => store.path === db);
+  assert.equal(locked.readability, "encrypted");
+  assert.match(locked.note, /Safe Storage/);
+
+  const available = discoverCookieStores({
+    ...options,
+    secretTool: () => "keyring-secret",
+  }).find((store) => store.path === db);
+  assert.equal(available.readability, "plaintext");
+});
+
+test("Linux Chromium cookie lookup decrypts encrypted rows from a copied database", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-quota-chromium-"));
+  const db = join(dir, "Cookies");
+  const writer = new DatabaseSync(db);
+  writer.exec("create table cookies (host_key text, name text, value text, encrypted_value blob, path text)");
+  writer.prepare("insert into cookies values (?, ?, ?, ?, ?)").run(
+    ".opencode.ai", "auth", "", encryptChromiumCookie("v10-session", { version: "v10", password: "peanuts" }), "/",
+  );
+  writer.prepare("insert into cookies values (?, ?, ?, ?, ?)").run(
+    ".opencode.ai", "auth-plain", "plain-session", Buffer.from("ignored"), "/",
+  );
+  writer.close();
+
+  const hit = findCookie({
+    host: "opencode.ai",
+    name: "auth",
+    stores: [{ browser: "chromium", path: db, profile: "linux:chromium/Default", readability: "plaintext", app: "chromium" }],
+  });
+  assert.equal(hit.found, true);
+  assert.equal(hit.value, "v10-session");
+  const plaintextHit = findCookie({
+    host: "opencode.ai",
+    name: "auth-plain",
+    stores: [{ browser: "chromium", path: db, profile: "linux:chromium/Default", readability: "plaintext", app: "chromium" }],
+  });
+  assert.equal(plaintextHit.value, "plain-session");
+
+  const reader = new DatabaseSync(db, { readOnly: true });
+  assert.equal(reader.prepare("select count(*) as count from cookies").get().count, 2);
+  reader.close();
+});
+
+test("Linux Chromium discovery covers browser config roots and profile cookie layouts", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-linux-browsers-"));
+  const config = join(home, "xdg");
+  const browserDirs = [
+    "google-chrome", "google-chrome-beta", "google-chrome-unstable", "chromium",
+    "microsoft-edge", "microsoft-edge-dev", "BraveSoftware/Brave-Browser",
+  ];
+  const expected = [];
+  for (const browserDir of browserDirs) {
+    const base = join(config, browserDir);
+    for (const relative of ["Default/Cookies", "Default/Network/Cookies", "Profile 1/Cookies", "Profile 1/Network/Cookies"]) {
+      const db = join(base, relative);
+      mkdirSync(join(db, ".."), { recursive: true });
+      writeFileSync(db, "synthetic database");
+      expected.push(db);
+    }
+  }
+
+  const stores = discoverCookieStores({ home, env: { XDG_CONFIG_HOME: config }, platform: "linux" });
+  const linuxStores = stores.filter((store) => store.profile.startsWith("linux:"));
+  assert.deepEqual(linuxStores.map((store) => store.path).sort(), expected.sort());
+  assert.ok(linuxStores.every((store) => store.browser === "chromium"));
+});
 
 test("Console API meters normalize into canonical quota windows", () => {
   const windows = parseGoMeters({
