@@ -327,3 +327,57 @@ test("GitHub Actions: thrown runners and failed commands never throw from the pr
   assert.equal(JSON.stringify(result).includes(FAKE_TOKEN), false);
   assert.match(result.error ?? "", /runner|command|gh/i);
 });
+
+test("GitHub Actions: supports multiple comma-separated organizations in PI_QUOTA_GITHUB_ORG", async () => {
+  const calls = [];
+  const runCommand = (command, args, runOptions) => {
+    calls.push({ command, args, options: runOptions });
+    const path = args.at(-1);
+    if (path.startsWith("/orgs/KoralisFut")) {
+      return { status: 0, stdout: JSON.stringify({ login: "KoralisFut", plan: { name: "pro" } }), stderr: "", error: null };
+    }
+    if (path.startsWith("/orgs/J3pf")) {
+      return { status: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)", error: null };
+    }
+    if (path === "/users/J3pf") {
+      return { status: 0, stdout: JSON.stringify({ login: "J3pf", plan: { name: "free" } }), stderr: "", error: null };
+    }
+    if (path.includes("/organizations/KoralisFut/settings/billing/usage/summary")) {
+      return {
+        status: 0,
+        stdout: JSON.stringify(githubActionsSummaryBody([{ product: "Actions", sku: "actions_linux", grossQuantity: 300, unitType: "minutes" }])),
+        stderr: "",
+        error: null,
+      };
+    }
+    if (path.includes("/users/J3pf/settings/billing/usage/summary")) {
+      return {
+        status: 0,
+        stdout: JSON.stringify(githubActionsSummaryBody([{ product: "Actions", sku: "actions_linux", grossQuantity: 100, unitType: "minutes" }])),
+        stderr: "",
+        error: null,
+      };
+    }
+    if (path.includes("/usage?")) {
+      return { status: 0, stdout: JSON.stringify(githubActionsUsageBody([])), stderr: "", error: null };
+    }
+    return { status: 1, stdout: "", stderr: "unexpected path", error: null };
+  };
+
+  const result = await fetchQuota(null, {
+    now: NOW,
+    env: { PI_QUOTA_GITHUB_ORG: "KoralisFut, J3pf" },
+    runCommand,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.account, "KoralisFut, J3pf");
+  assert.equal(result.windows.length, 2);
+  assert.equal(result.windows[0].id, "monthly");
+  assert.equal(result.windows[0].label, "KoralisFut monthly");
+  assert.match(result.windows[0].note, /300 of 3000 min used/);
+  assert.equal(result.windows[1].id, "monthly-j3pf");
+  assert.equal(result.windows[1].label, "J3pf monthly");
+  assert.match(result.windows[1].note, /100 of 2000 min used/);
+});
+

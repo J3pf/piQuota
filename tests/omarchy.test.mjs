@@ -219,3 +219,71 @@ test("omarchy automatically skips claude when native claude.json exists in targe
   assert.equal(existsSync(join(dir, "pi-claude.json")), false);
   assert.equal(existsSync(join(dir, "pi-codex.json")), true);
 });
+
+test("github-actions record summarizes tab name to GH Actions, identifies organization in tierLabel, and surfaces consumed minutes in limits", () => {
+  const ghProvider = {
+    family: "github-actions",
+    label: "GitHub Actions",
+    account: "KoralisSoft",
+    plan: "free",
+    windows: [
+      {
+        id: "monthly",
+        label: "Monthly window",
+        usedPercent: 6.7,
+        remainingPercent: 93.3,
+        resetsAt: "2026-11-01T00:00:00.000Z",
+        note: "134 of 2000 min used | 1866 left",
+      },
+    ],
+    error: null,
+    ok: true,
+    source: "gh CLI",
+    updatedAt: "2026-10-04T05:00:00.000Z",
+  };
+  const built = buildRecord(ghProvider, { now: NOW });
+  assert.equal(built.id, "pi-github-actions");
+  assert.equal(built.record.name, "GH Actions", "tab name must be summarized so tabs do not overflow");
+  assert.equal(built.record.tierLabel, "KoralisSoft · free", "hero tierLabel must clearly identify the organization");
+  assert.equal(built.record.limits.length, 1);
+  assert.equal(built.record.limits[0].title, "KoralisSoft (134 / 2000 min)", "limits title must display organization and consumed minutes");
+  assert.equal(built.record.limits[0].percent, 0.067);
+});
+
+test("github-actions record formats multiple organization windows distinctly in limits", () => {
+  const ghProvider = {
+    family: "github-actions",
+    label: "GitHub Actions",
+    account: "KoralisFut, J3pf",
+    plan: "free",
+    windows: [
+      {
+        id: "monthly",
+        label: "KoralisFut monthly",
+        usedPercent: 16.7,
+        remainingPercent: 83.3,
+        resetsAt: "2026-11-01T00:00:00.000Z",
+        note: "500 of 3000 min used | 2500 left",
+      },
+      {
+        id: "monthly-j3pf",
+        label: "J3pf monthly",
+        usedPercent: 0,
+        remainingPercent: 100,
+        resetsAt: "2026-11-01T00:00:00.000Z",
+        note: "0 of 2000 min used | 2000 left",
+      },
+    ],
+    error: null,
+    ok: true,
+    source: "gh CLI",
+    updatedAt: "2026-10-04T05:00:00.000Z",
+  };
+  const built = buildRecord(ghProvider, { now: NOW });
+  assert.equal(built.record.name, "GH Actions");
+  assert.equal(built.record.tierLabel, "KoralisFut, J3pf · free");
+  assert.equal(built.record.limits.length, 2);
+  assert.equal(built.record.limits[0].title, "KoralisFut (500 / 3000 min)");
+  assert.equal(built.record.limits[1].title, "J3pf (0 / 2000 min)");
+});
+

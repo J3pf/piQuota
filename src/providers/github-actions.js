@@ -159,6 +159,117 @@ function nextMonthReset(now) {
 }
 
 /**
+ * @param {string} org
+ * @param {{
+ *   now: number,
+ *   env: Record<string, string | undefined>,
+ *   overrideAllowance?: number,
+ *   runCommand: typeof defaultRunCommand,
+ *   timeoutMs: number,
+ *   repoFilter: string[],
+ * }} options
+ * @returns {Promise<{
+ *   ok: true,
+ *   org: string,
+ *   plan: string | null,
+ *   allowance: number,
+ *   usageTotal: number,
+ *   usedPercent: number,
+ *   remainingPercent: number,
+ *   reset: { at: string, inSeconds: number },
+ *   window: { id: string, label: string },
+ *   note: string,
+ * } | { ok: false, error: string }>}
+ */
+async function fetchOrgQuota(org, { now, env, overrideAllowance, runCommand, timeoutMs, repoFilter }) {
+  let allowance;
+  let plan = null;
+  let isUser = false;
+
+  if (overrideAllowance !== undefined) {
+    allowance = overrideAllowance;
+  } else {
+    let organization = await requestGhJson(`/orgs/${encodeURIComponent(org)}`, { runCommand, timeoutMs, env });
+    if (!organization.ok) {
+      const user = await requestGhJson(`/users/${encodeURIComponent(org)}`, { runCommand, timeoutMs, env });
+      if (user.ok) {
+        organization = user;
+        isUser = true;
+      } else {
+        return { ok: false, error: organization.error };
+      }
+    }
+    const organizationBody = record(organization.body);
+    const rawPlan = record(organizationBody?.plan)?.name;
+    const normalizedPlan = typeof rawPlan === "string" ? rawPlan.toLowerCase() : "";
+    const planAllowance = ALLOWANCES[normalizedPlan];
+    if (!planAllowance) {
+      return { ok: false, error: `GitHub organization plan is missing or unsupported; set PI_QUOTA_GITHUB_ACTIONS_MINUTES to a positive monthly allowance (supported plans: free, pro, team, enterprise_cloud).` };
+    }
+    allowance = planAllowance;
+    plan = normalizedPlan;
+  }
+
+  const encodedOrg = encodeURIComponent(org);
+  const basePath = isUser ? `/users/${encodedOrg}` : `/organizations/${encodedOrg}`;
+  const summary = await requestGhJson(
+    `${basePath}/settings/billing/usage/summary?product=Actions`,
+    { runCommand, timeoutMs, env },
+  );
+  if (!summary.ok) return { ok: false, error: summary.error };
+  const summaryBody = record(summary.body);
+  if (!summaryBody || !Array.isArray(summaryBody.usageItems)) {
+    return { ok: false, error: "GitHub Actions usage summary was empty or malformed; verify organization billing access and the GitHub API response shape." };
+  }
+  const usage = sumLinuxMinutes(summaryBody.usageItems, "Actions", "grossQuantity");
+  if (!usage) {
+    return { ok: false, error: "GitHub Actions usage summary contained no Linux minute rows; verify organization billing access and the GitHub API response shape." };
+  }
+
+  const current = new Date(now);
+  const year = current.getUTCFullYear();
+  const month = current.getUTCMonth() + 1;
+  const detailed = await requestGhJson(
+    `${basePath}/settings/billing/usage?year=${year}&month=${month}`,
+    { runCommand, timeoutMs, env },
+  );
+  if (!detailed.ok) return { ok: false, error: detailed.error };
+  const detailedBody = record(detailed.body);
+  if (!detailedBody || !Array.isArray(detailedBody.usageItems)) {
+    return { ok: false, error: "GitHub Actions detailed usage payload was empty or malformed; verify organization billing access and the GitHub API response shape." };
+  }
+
+  const attributions = repoAttributions(detailedBody.usageItems, repoFilter);
+  if (!attributions) {
+    return { ok: false, error: "GitHub Actions detailed usage payload was malformed; verify organization billing access and the GitHub API response shape." };
+  }
+
+  const usedPercent = Math.min(100, Math.max(0, Math.round((usage.total / allowance) * 100 * 100) / 100));
+  const remainingPercent = Math.min(100, Math.max(0, 100 - usedPercent));
+  const reset = nextMonthReset(now);
+  const window = windowFromSeconds(LINUX_MINUTES);
+  const left = Math.max(0, allowance - usage.total);
+  const multipleReposExist = attributions.length > 1;
+  const topRepos = repoFilter.length > 0 || multipleReposExist
+    ? attributions.slice(0, 3).map(({ name, minutes }) => `${name} ${formatMinutes(minutes)}`)
+    : [];
+  const note = `${formatMinutes(usage.total)} of ${formatMinutes(allowance)} min used | ${formatMinutes(left)} left${topRepos.length ? ` · ${topRepos.join(" · ")}` : ""}`;
+
+  return {
+    ok: true,
+    org,
+    plan,
+    allowance,
+    usageTotal: usage.total,
+    usedPercent,
+    remainingPercent,
+    reset,
+    window,
+    note,
+  };
+}
+
+/**
  * @param {unknown} credential Unused; GitHub authentication belongs to the gh CLI.
  * @param {{
  *   now?: number,
@@ -172,97 +283,92 @@ export async function fetchQuota(credential, options = {}) {
   void credential;
   const now = options.now ?? Date.now();
   const env = options.env ?? process.env;
-  const org = safeText(env.PI_QUOTA_GITHUB_ORG?.trim() || DEFAULT_ORG);
-  const base = { family: FAMILY, label: LABEL, account: org, plan: null, source: SOURCE };
+  const envOrgs = env.PI_QUOTA_GITHUB_ORG?.trim();
+  const orgList = envOrgs
+    ? envOrgs.split(",").map((s) => safeText(s.trim())).filter(Boolean)
+    : [DEFAULT_ORG];
+  const orgs = orgList.length > 0 ? orgList : [DEFAULT_ORG];
+
+  const primaryOrg = orgs.join(", ");
+  const base = { family: FAMILY, label: LABEL, account: primaryOrg, plan: null, source: SOURCE };
   const fail = (error) => degradedResult({ ...base, error: safeText(error), now });
   const runCommand = options.runCommand ?? defaultRunCommand;
   const timeoutMs = options.timeoutMs ?? 15_000;
 
   try {
-    let allowance;
-    let plan = null;
+    let overrideAllowance;
     const override = env.PI_QUOTA_GITHUB_ACTIONS_MINUTES;
     if (override !== undefined) {
       const numericOverride = Number(override);
       if (!Number.isFinite(numericOverride) || !Number.isInteger(numericOverride) || numericOverride <= 0) {
         return fail("PI_QUOTA_GITHUB_ACTIONS_MINUTES must be a positive finite integer; set it to a valid monthly minutes allowance.");
       }
-      allowance = numericOverride;
-    } else {
-      const organization = await requestGhJson(`/orgs/${encodeURIComponent(org)}`, { runCommand, timeoutMs, env });
-      if (!organization.ok) return fail(organization.error);
-      const organizationBody = record(organization.body);
-      const rawPlan = record(organizationBody?.plan)?.name;
-      const normalizedPlan = typeof rawPlan === "string" ? rawPlan.toLowerCase() : "";
-      const planAllowance = ALLOWANCES[normalizedPlan];
-      if (!planAllowance) {
-        return fail(`GitHub organization plan is missing or unsupported; set PI_QUOTA_GITHUB_ACTIONS_MINUTES to a positive monthly allowance (supported plans: free, pro, team, enterprise_cloud).`);
-      }
-      allowance = planAllowance;
-      plan = normalizedPlan;
-    }
-
-    const encodedOrg = encodeURIComponent(org);
-    const summary = await requestGhJson(
-      `/organizations/${encodedOrg}/settings/billing/usage/summary?product=Actions`,
-      { runCommand, timeoutMs, env },
-    );
-    if (!summary.ok) return fail(summary.error);
-    const summaryBody = record(summary.body);
-    if (!summaryBody || !Array.isArray(summaryBody.usageItems)) {
-      return fail("GitHub Actions usage summary was empty or malformed; verify organization billing access and the GitHub API response shape.");
-    }
-    const usage = sumLinuxMinutes(summaryBody.usageItems, "Actions", "grossQuantity");
-    if (!usage) {
-      return fail("GitHub Actions usage summary contained no Linux minute rows; verify organization billing access and the GitHub API response shape.");
-    }
-
-    const current = new Date(now);
-    const year = current.getUTCFullYear();
-    const month = current.getUTCMonth() + 1;
-    const detailed = await requestGhJson(
-      `/organizations/${encodedOrg}/settings/billing/usage?year=${year}&month=${month}`,
-      { runCommand, timeoutMs, env },
-    );
-    if (!detailed.ok) return fail(detailed.error);
-    const detailedBody = record(detailed.body);
-    if (!detailedBody || !Array.isArray(detailedBody.usageItems)) {
-      return fail("GitHub Actions detailed usage payload was empty or malformed; verify organization billing access and the GitHub API response shape.");
+      overrideAllowance = numericOverride;
     }
 
     const repoFilter = (env.PI_QUOTA_GITHUB_ACTIONS_REPOS ?? "")
       .split(",")
       .map((name) => name.trim())
       .filter(Boolean);
-    const attributions = repoAttributions(detailedBody.usageItems, repoFilter);
-    if (!attributions) {
-      return fail("GitHub Actions detailed usage payload was malformed; verify organization billing access and the GitHub API response shape.");
+
+    if (orgs.length === 1) {
+      const org = orgs[0];
+      const res = await fetchOrgQuota(org, { now, env, overrideAllowance, runCommand, timeoutMs, repoFilter });
+      if (!res.ok) return fail(res.error);
+      return {
+        ...base,
+        account: org,
+        plan: res.plan,
+        windows: [buildWindow({
+          id: res.window.id,
+          label: res.window.label,
+          usedPercent: res.usedPercent,
+          remainingPercent: res.remainingPercent,
+          resetsAt: res.reset.at,
+          resetsInSec: res.reset.inSeconds,
+          note: res.note,
+          now,
+        })],
+        error: null,
+        ok: true,
+        updatedAt: new Date(now).toISOString(),
+      };
     }
 
-    const usedPercent = Math.min(100, Math.max(0, Math.round((usage.total / allowance) * 100 * 100) / 100));
-    const remainingPercent = Math.min(100, Math.max(0, 100 - usedPercent));
-    const reset = nextMonthReset(now);
-    const window = windowFromSeconds(LINUX_MINUTES);
-    const left = Math.max(0, allowance - usage.total);
-    const multipleReposExist = attributions.length > 1;
-    const topRepos = repoFilter.length > 0 || multipleReposExist
-      ? attributions.slice(0, 3).map(({ name, minutes }) => `${name} ${formatMinutes(minutes)}`)
-      : [];
-    const note = `${formatMinutes(usage.total)} of ${formatMinutes(allowance)} min used | ${formatMinutes(left)} left${topRepos.length ? ` · ${topRepos.join(" · ")}` : ""}`;
+    const windows = [];
+    const plans = [];
+    const errors = [];
+    for (let i = 0; i < orgs.length; i++) {
+      const org = orgs[i];
+      const res = await fetchOrgQuota(org, { now, env, overrideAllowance, runCommand, timeoutMs, repoFilter });
+      if (!res.ok) {
+        errors.push(`${org}: ${res.error}`);
+        continue;
+      }
+      if (res.plan) plans.push(res.plan);
+      const windowId = i === 0 ? "monthly" : `monthly-${org.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`;
+      windows.push(buildWindow({
+        id: windowId,
+        label: `${org} monthly`,
+        usedPercent: res.usedPercent,
+        remainingPercent: res.remainingPercent,
+        resetsAt: res.reset.at,
+        resetsInSec: res.reset.inSeconds,
+        note: `${org}: ${res.note}`,
+        now,
+      }));
+    }
 
+    if (windows.length === 0) {
+      return fail(errors.join("; "));
+    }
+
+    const uniquePlans = Array.from(new Set(plans));
     return {
       ...base,
-      plan,
-      windows: [buildWindow({
-        id: window.id,
-        label: window.label,
-        usedPercent,
-        remainingPercent,
-        resetsAt: reset.at,
-        resetsInSec: reset.inSeconds,
-        note,
-        now,
-      })],
+      account: orgs.join(", "),
+      plan: uniquePlans.join(", ") || null,
+      windows,
       error: null,
       ok: true,
       updatedAt: new Date(now).toISOString(),

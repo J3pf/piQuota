@@ -62,9 +62,33 @@ export function isPiRecordId(id) {
 
 /**
  * @param {import("../model.js").QuotaWindow} window
+ * @param {import("../model.js").QuotaResult} [provider]
  * @returns {string}
  */
-function windowTitle(window) {
+function windowTitle(window, provider) {
+  if (provider?.family === "github-actions") {
+    const match = typeof window.note === "string"
+      ? window.note.match(/(\d+(?:\.\d+)?)\s+of\s+(\d+(?:\.\d+)?)\s+min/i)
+      : null;
+    const minutesLabel = match ? `${match[1]} / ${match[2]} min` : null;
+
+    let org = "";
+    if (window.label && window.label !== "Monthly window" && window.label !== "monthly") {
+      org = window.label.replace(/\s+(?:monthly.*|\(monthly.*\))$/i, "").trim();
+    }
+    if (!org && provider.account) {
+      org = provider.account;
+    }
+
+    if (minutesLabel) {
+      return org ? `${org} (${minutesLabel})` : `Monthly (${minutesLabel})`;
+    }
+    if (org && org !== "GitHub Actions") {
+      return org;
+    }
+    return "Monthly";
+  }
+
   switch (window.id) {
     case "5h":
       return "Session";
@@ -79,16 +103,17 @@ function windowTitle(window) {
 
 /**
  * @param {import("../model.js").QuotaWindow[]} windows
+ * @param {import("../model.js").QuotaResult} [provider]
  * @returns {Array<{ label: string, title: string, percent: number, resetsAt: string }>}
  */
-function mapLimits(windows) {
+function mapLimits(windows, provider) {
   const limits = [];
   for (const window of windows ?? []) {
     // A window without a percentage would otherwise read as "0% used".
     if (typeof window.usedPercent !== "number" || !Number.isFinite(window.usedPercent)) continue;
     limits.push({
       label: redact(window.label || window.id || "Limit"),
-      title: redact(windowTitle(window)),
+      title: redact(windowTitle(window, provider)),
       percent: Math.min(1, Math.max(0, window.usedPercent / 100)),
       resetsAt: typeof window.resetsAt === "string" ? window.resetsAt : "",
     });
@@ -121,6 +146,31 @@ export function describeError(family, error) {
 }
 
 /**
+ * @param {import("../model.js").QuotaResult} provider
+ * @returns {string}
+ */
+function recordName(provider) {
+  if (provider.family === "github-actions") {
+    return "GH Actions";
+  }
+  return redact(String(provider.label || provider.family).replace(/\s*\(Pi\)\s*$/i, ""));
+}
+
+/**
+ * @param {import("../model.js").QuotaResult} provider
+ * @returns {string}
+ */
+function recordTierLabel(provider) {
+  if (provider.family === "github-actions") {
+    const account = provider.account ? redact(provider.account) : "";
+    const plan = provider.plan ? redact(provider.plan) : "";
+    if (account && plan) return `${account} · ${plan}`;
+    return account || plan || "";
+  }
+  return provider.plan ? redact(provider.plan) : "";
+}
+
+/**
  * Build the record for one provider, or `null` when the provider is simply not
  * configured: a tab that only says "not configured" is noise, so it is omitted
  * (and any record from an earlier run is removed by the publisher).
@@ -131,7 +181,7 @@ export function describeError(family, error) {
  */
 export function buildRecord(provider, options = {}) {
   const now = options.now ?? Date.now();
-  const limits = mapLimits(provider.windows);
+  const limits = mapLimits(provider.windows, provider);
   const failed = !provider.ok || limits.length === 0;
 
   if (failed && errorKind(provider.error) === "missing") return null;
@@ -146,9 +196,9 @@ export function buildRecord(provider, options = {}) {
     record: {
       schemaVersion: SCHEMA_VERSION,
       id,
-      name: redact(String(provider.label || provider.family).replace(/\s*\(Pi\)\s*$/i, "")),
+      name: recordName(provider),
       ready: !failed,
-      tierLabel: provider.plan ? redact(provider.plan) : "",
+      tierLabel: recordTierLabel(provider),
       limits: failed && limits.length === 0 ? [{ ...PLACEHOLDER_LIMIT }] : limits,
       usageStatusText: status.usageStatusText,
       authHelpText: status.authHelpText,
