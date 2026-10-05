@@ -145,13 +145,19 @@ export function describeError(family, error) {
   }
 }
 
+const SHORT_NAMES = {
+  "github-actions": "GH Actions",
+  antigravity: "Agy",
+  "opencode-go": "OP-Go",
+};
+
 /**
  * @param {import("../model.js").QuotaResult} provider
  * @returns {string}
  */
 function recordName(provider) {
-  if (provider.family === "github-actions") {
-    return "GH Actions";
+  if (SHORT_NAMES[provider.family]) {
+    return SHORT_NAMES[provider.family];
   }
   return redact(String(provider.label || provider.family).replace(/\s*\(Pi\)\s*$/i, ""));
 }

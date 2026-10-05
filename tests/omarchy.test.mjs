@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { runOmarchyCommand, skippedFamilies } from "../src/cli/commands/omarchy.js";
-import { publishRecords, resolveOmarchyDir } from "../src/omarchy/publish.js";
+import { publishRecords, resolveOmarchyDir, syncOmarchyAssets } from "../src/omarchy/publish.js";
 import { buildRecord, buildRecords } from "../src/omarchy/record.js";
 
 const NOW = Date.parse("2026-10-04T05:00:00.000Z");
@@ -220,6 +220,23 @@ test("omarchy automatically skips claude when native claude.json exists in targe
   assert.equal(existsSync(join(dir, "pi-codex.json")), true);
 });
 
+test("omarchy record summarizes long provider names to fit tab switcher", () => {
+  const agy = buildRecord(provider({ family: "antigravity", label: "Antigravity (Pi)" }), { now: NOW });
+  assert.equal(agy.record.name, "Agy");
+
+  const opencode = buildRecord(provider({ family: "opencode-go", label: "OpenCode Go (Pi)" }), { now: NOW });
+  assert.equal(opencode.record.name, "OP-Go");
+
+  const gh = buildRecord(provider({ family: "github-actions", label: "GitHub Actions", account: "KoralisSoft" }), { now: NOW });
+  assert.equal(gh.record.name, "GH Actions");
+
+  const claude = buildRecord(provider({ family: "claude", label: "Claude (Pi)" }), { now: NOW });
+  assert.equal(claude.record.name, "Claude");
+
+  const codex = buildRecord(provider({ family: "codex", label: "Codex (Pi)" }), { now: NOW });
+  assert.equal(codex.record.name, "Codex");
+});
+
 test("github-actions record summarizes tab name to GH Actions, identifies organization in tierLabel, and surfaces consumed minutes in limits", () => {
   const ghProvider = {
     family: "github-actions",
@@ -285,5 +302,23 @@ test("github-actions record formats multiple organization windows distinctly in 
   assert.equal(built.record.limits.length, 2);
   assert.equal(built.record.limits[0].title, "KoralisFut (500 / 3000 min)");
   assert.equal(built.record.limits[1].title, "J3pf (0 / 2000 min)");
+});
+
+test("syncOmarchyAssets copies SVG marks into Omarchy plugin asset directories", () => {
+  const home = tempDir();
+  try {
+    const pluginDir = join(home, ".config", "omarchy", "plugins", "my.agents");
+    mkdirSync(pluginDir, { recursive: true });
+    writeFileSync(join(pluginDir, "manifest.json"), "{}");
+
+    const copied = syncOmarchyAssets({ home });
+    assert.ok(copied.length > 0);
+    assert.ok(existsSync(join(pluginDir, "assets", "antigravity.svg")));
+    assert.ok(existsSync(join(pluginDir, "assets", "pi-antigravity.svg")));
+    assert.ok(existsSync(join(pluginDir, "assets", "opencode-go.svg")));
+    assert.ok(existsSync(join(pluginDir, "assets", "github-actions.svg")));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 

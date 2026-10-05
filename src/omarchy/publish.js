@@ -7,9 +7,10 @@
  * Omarchy's own `claude.json` / `codex.json` records are never touched.
  */
 
-import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { isPiRecordId, RECORD_PREFIX } from "./record.js";
 
@@ -49,6 +50,46 @@ function writeRecord(dir, id, record) {
 }
 
 /**
+ * Synchronize provider SVG icons into Omarchy plugin assets directories if present.
+ *
+ * @param {{ env?: Record<string, string | undefined>, home?: string }} [options]
+ * @returns {string[]} Paths of written assets.
+ */
+export function syncOmarchyAssets(options = {}) {
+  const env = options.env ?? process.env;
+  const home = options.home ?? (env.HOME || homedir());
+  const pluginsDir = join(home, ".config", "omarchy", "plugins");
+  if (!existsSync(pluginsDir)) return [];
+
+  const assetsSrc = fileURLToPath(new URL("assets", import.meta.url));
+  if (!existsSync(assetsSrc)) return [];
+
+  const copied = [];
+  try {
+    for (const plugin of readdirSync(pluginsDir)) {
+      const pluginDir = join(pluginsDir, plugin);
+      const manifestPath = join(pluginDir, "manifest.json");
+      if (!existsSync(manifestPath)) continue;
+      const targetAssetsDir = join(pluginDir, "assets");
+      mkdirSync(targetAssetsDir, { recursive: true });
+
+      for (const file of readdirSync(assetsSrc)) {
+        if (!file.endsWith(".svg")) continue;
+        const srcPath = join(assetsSrc, file);
+        const dstPath = join(targetAssetsDir, file);
+        const piDstPath = join(targetAssetsDir, `pi-${file}`);
+        try {
+          copyFileSync(srcPath, dstPath);
+          copyFileSync(srcPath, piDstPath);
+          copied.push(dstPath, piDstPath);
+        } catch {}
+      }
+    }
+  } catch {}
+  return copied;
+}
+
+/**
  * Write the given records and remove stale `pi-*.json` files whose provider is
  * no longer present.
  *
@@ -74,5 +115,8 @@ export function publishRecords(records, options = {}) {
     rmSync(join(dir, name), { force: true });
     removed.push(join(dir, name));
   }
+
+  syncOmarchyAssets(options);
+
   return { dir, written, removed };
 }
