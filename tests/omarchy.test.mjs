@@ -304,7 +304,7 @@ test("github-actions record formats multiple organization windows distinctly in 
   assert.equal(built.record.limits[1].title, "J3pf (0 / 2000 min)");
 });
 
-test("syncOmarchyAssets copies SVG marks into Omarchy plugin asset directories", () => {
+test("syncOmarchyAssets copies SVG marks into Omarchy plugin asset directories idempotently", () => {
   const home = tempDir();
   try {
     const pluginDir = join(home, ".config", "omarchy", "plugins", "my.agents");
@@ -317,6 +317,10 @@ test("syncOmarchyAssets copies SVG marks into Omarchy plugin asset directories",
     assert.ok(existsSync(join(pluginDir, "assets", "pi-antigravity.svg")));
     assert.ok(existsSync(join(pluginDir, "assets", "opencode-go.svg")));
     assert.ok(existsSync(join(pluginDir, "assets", "github-actions.svg")));
+
+    // Idempotent: identical files must not be touched to prevent triggering Omarchy shell reload watches
+    const secondPass = syncOmarchyAssets({ home });
+    assert.equal(secondPass.length, 0);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

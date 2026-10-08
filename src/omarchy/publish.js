@@ -7,7 +7,7 @@
  * Omarchy's own `claude.json` / `codex.json` records are never touched.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,17 +36,48 @@ export function resolveOmarchyDir(options = {}) {
  */
 function writeRecord(dir, id, record) {
   const target = join(dir, `${id}.json`);
+  const content = `${JSON.stringify(record)}\n`;
+  if (existsSync(target)) {
+    try {
+      if (readFileSync(target, "utf-8") === content) {
+        return target;
+      }
+    } catch {}
+  }
   // The temp name does not end in `.json`, so Omarchy's `*.json` watcher never
   // sees a half-written file.
   const temp = join(dir, `.${id}.${process.pid}.tmp`);
   try {
-    writeFileSync(temp, `${JSON.stringify(record)}\n`, { mode: 0o644 });
+    writeFileSync(temp, content, { mode: 0o644 });
     renameSync(temp, target);
   } catch (error) {
     rmSync(temp, { force: true });
     throw error;
   }
   return target;
+}
+
+/**
+ * Copy a file only if the target does not exist or its content differs.
+ * This is critical when writing to directories watched by inotify, such as
+ * Omarchy's plugins directory, where redundant writes trigger full shell reloads.
+ *
+ * @param {string} srcPath
+ * @param {string} dstPath
+ * @returns {boolean} Whether the file was written.
+ */
+function copyIfChanged(srcPath, dstPath) {
+  try {
+    if (existsSync(dstPath)) {
+      const srcBuf = readFileSync(srcPath);
+      const dstBuf = readFileSync(dstPath);
+      if (srcBuf.equals(dstBuf)) return false;
+    }
+    copyFileSync(srcPath, dstPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -71,18 +102,17 @@ export function syncOmarchyAssets(options = {}) {
       const manifestPath = join(pluginDir, "manifest.json");
       if (!existsSync(manifestPath)) continue;
       const targetAssetsDir = join(pluginDir, "assets");
-      mkdirSync(targetAssetsDir, { recursive: true });
+      if (!existsSync(targetAssetsDir)) {
+        mkdirSync(targetAssetsDir, { recursive: true });
+      }
 
       for (const file of readdirSync(assetsSrc)) {
         if (!file.endsWith(".svg")) continue;
         const srcPath = join(assetsSrc, file);
         const dstPath = join(targetAssetsDir, file);
         const piDstPath = join(targetAssetsDir, `pi-${file}`);
-        try {
-          copyFileSync(srcPath, dstPath);
-          copyFileSync(srcPath, piDstPath);
-          copied.push(dstPath, piDstPath);
-        } catch {}
+        if (copyIfChanged(srcPath, dstPath)) copied.push(dstPath);
+        if (copyIfChanged(srcPath, piDstPath)) copied.push(piDstPath);
       }
     }
   } catch {}
