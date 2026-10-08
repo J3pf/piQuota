@@ -25,9 +25,11 @@ Mejorar la integración de piQuota con el panel de agentes de Omarchy para la fa
 | 4 | Actualizar el contador de tests en `README.md` y verificar integridad de documentación. | `README.md` | `node --test tests/docs.test.mjs` pasa al 100%. |
 | 5 | Preparar release 0.10.2: bump en `package.json` y `bin/piquota.js`, commit convencional descriptivo en `master`, push a `origin/master`, y crear GitHub release para activar el workflow de npm. | `package.json`, `bin/piquota.js` | Release en GitHub y publicación en npm ejecutada. |
 | 6 | Ajustes adicionales de pestañas e íconos: abreviar Antigravity a `Agy` y OpenCode Go a `OP-Go`, incluir SVGs vectoriales nativos para cada proveedor en `src/omarchy/assets/`, implementar `syncOmarchyAssets` y publicar release `0.10.3`. | `src/omarchy/record.js`, `src/omarchy/publish.js`, `src/omarchy/assets/*.svg` | Release v0.10.3 en GitHub y npm. |
+| 7 | Idempotencia en sincronización de assets y escritura de uso: evitar sobreescritura redundante de SVG en `plugins/*/assets/` para prevenir reinicios del shell de Omarchy disparados por `inotifywait`. Release `0.10.4`. | `src/omarchy/publish.js`, `tests/omarchy.test.mjs` | Release v0.10.4 en GitHub y npm. |
 
 ## Evidence / Releases
 
 - **v0.10.2**: Introdujo el resumen de GitHub Actions (`GH Actions`), desglose de organización en `tierLabel` y minutos en `limits[].title`, y soporte multi-org en `PI_QUOTA_GITHUB_ORG`.
 - **v0.10.3**: Abreviación de pestañas para Antigravity (`Agy`) y OpenCode Go (`OP-Go`), bundle de assets SVG nativos y sincronización automática hacia los plugins de Omarchy. Disponible en npm: `@j3pf/piquota@0.10.3`.
+- **v0.10.4**: Sincronización de assets y escritura de registros de uso estrictamente idempotente. Elimina eventos `inotify` en `~/.config/omarchy/plugins/` evitando recargas y parpadeos del shell de Omarchy. Disponible en npm: `@j3pf/piquota@0.10.4`.
 
