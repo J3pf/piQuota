@@ -10,10 +10,13 @@ shuvquota, and it never writes to a credential file.
 
 | Surface | Command |
 | --- | --- |
-| Terminal | `piquota` · `piquota --json` · `piquota --status` |
+| Terminal | `piquota` · `piquota --json` · `piquota --status` · `piquota --compact` |
 | Pi TUI | `/quota` · `/usage` |
-| Moshi Usages tab | `piquota moshi push` (or the `moshi watch` user service) |
-| Moshi notifications | `piquota moshi takeover` + the `moshi-approvals.ts` extension |
+| External / `rp-host` / automation | `piquota --json` (structured JSON feed with `primaryWindowId` and countdowns) |
+| Omarchy Bar Panel | `piquota omarchy` (or systemd user timer via `--omarchy-timer`) |
+
+> [!NOTE]
+> **Moshi Integration Removed in v0.11.0**: Previous versions included an integration with the Moshi mobile app and `moshi-hook`. Starting with v0.11.0, Moshi-specific commands and approval mirroring are removed in favor of direct local integrations such as `piquota --json` for `rp-host` / Rp-app and `piquota omarchy` for Omarchy.
 
 ## Hard guarantees
 
@@ -42,13 +45,8 @@ shuvquota, and it never writes to a credential file.
   | `~/.cache/pi-quota/usage.json` | the report cache |
   | `~/.cache/pi-quota/refresh-state.json` | each family's own refresh clock |
   | `~/.cache/pi-quota/last-published.json`, `last-good.json`, `backoff.json` | sticky snapshots and throttle state |
-  | `~/.local/state/pi-quota/moshi-usage.json` | the local Moshi-shaped artifact |
-  | `~/.local/state/pi-quota/moshi-takeover.json` | only after `piquota moshi takeover` |
   | `~/.config/pi-quota/opencode-cookie` | only after `piquota auth opencode`, mode `600` |
   | `~/.pi/agent/extensions/*.ts` | only by `install.sh` |
-
-  `~/.config/moshi/config.toml` is changed **only** through moshi-hook's own CLI
-  (`moshi-hook set`), never by editing the file.
 
 ## Status, verified against the live APIs
 
@@ -69,9 +67,10 @@ Four findings worth recording, each of which cost a wrong hypothesis:
    validates (`/zen/v1/models` → 200, 70 models) but exposes no usage, and every
    `/api/*` path on opencode.ai returns 404: the Go windows only exist in the
    authenticated SSR page.
-3. **Moshi uses native agent IDs for provider logos and accepts `pi` for Pi-owned
-   snapshots.** The `accountLabel` carries the provider name (for example,
-   `"GitHub Actions"`) while the agent ID identifies the Pi publisher.
+3. **`primaryWindowId` identifies the most urgent window.** The CLI computes the
+   shortest, most pressing window (e.g. 5h session before weekly) so downstream UI
+   consumers like `rp-host` and the Pi TUI render priority pills without reimplementing
+   window precedence.
 4. **Both Claude OAuth stores answer the same endpoint.** Pi's own `anthropic`
    entry and the Claude Code CLI store return identical windows, which is what
    makes the second source a drop-in replacement rather than a separate feature.
@@ -122,13 +121,6 @@ the `read:org`, `repo`, and `workflow` scopes may be required.
 * **Node.js >= 20.0.0** (native `node:sqlite` and global `fetch` support; zero npm dependencies).
 * **[Pi Coding Agent](https://github.com/earendil-works/pi)** (`pi`).
 * **[Gentle AI](https://github.com/Gentleman-Programming/gentle-pi)** (`gentle-pi`).
-* **[Moshi](https://getmoshi.app)** (`moshi-hook`) *(optional — only needed if syncing to the Moshi mobile app)*:
-  - Install daemon & CLI: `curl -fsSL https://getmoshi.app/install | bash`
-  - Pair your host: `moshi-hook pair`
-  - Run daemon: `moshi-hook service install` or `moshi-hook serve`
-  - *(Without Moshi the CLI, the TUI line and every report still work fully locally;
-    only the phone cards and the approval mirror need it. `install.sh` skips the
-    mirror when `moshi-hook` is absent.)*
 * Platform support: Linux, WSL2, macOS. See [docs/OS-COMPATIBILITY.md](docs/OS-COMPATIBILITY.md) for OS-specific details.
 
 ### 1-Line Quick Install
@@ -153,15 +145,11 @@ the TUI.
 | Omarchy bar records | yes, written on every refresh | yes |
 | `piquota` on your `PATH` for terminal use | no | yes, symlinked |
 | Omarchy sync while Pi is closed | no | yes, with `--omarchy-timer` |
-| Moshi background service | no | yes |
 
 If you live inside Pi and use Omarchy, the npm route covers it: the extension
 runs `piquota omarchy` on every quota refresh, so the bar fills without any
 setup. Choose `install.sh` when you want the CLI in a terminal, or background
 sync while Pi is not running.
-
-The approval mirror extension loads under either route and does nothing unless
-`moshi-hook` is installed.
 
 ### Manual Install / Development
 
@@ -173,7 +161,7 @@ cd piQuota
 
 No sudo. It validates Node, Pi and Gentle AI, reports which Claude source it found,
 copies the project to `~/.local/share/pi-quota`, symlinks `~/.local/bin/piquota`,
-installs both Pi extensions (the approval mirror only when `moshi-hook` is present),
+installs the Pi TUI extension,
 and removes the previous generation's `shuvquota` shim so upstream `/usr/bin/shuvquota`
 is reachable again.
 
@@ -183,7 +171,7 @@ is reachable again.
 piquota                 # boxed panel: ring, bar, % left, "reset in 3h 12m"
 piquota claude codex    # only these families
 piquota github-actions  # GitHub Actions minutes (explicit opt-in; aliases: gh, actions)
-piquota --json          # normalized report
+piquota --json          # normalized report (for rp-host, scripts, and automations)
 piquota --compact       # one line per provider
 piquota --status        # single line with rings, for status bars
 piquota --explain       # which stores and fields are read (names only)
@@ -201,14 +189,6 @@ piquota auth opencode           # open the login in Firefox and capture the sess
 piquota auth opencode --paste   # read the cookie from stdin instead
 piquota auth opencode --no-browser
 piquota auth opencode --wait 300
-
-piquota moshi status            # pairing, publisher mode and usage-collection state
-piquota moshi push              # publish once to the paired host, then exit
-piquota moshi watch             # publish every 30s, refetch every 60s (Claude: 300s)
-piquota moshi artifact          # write the local JSON artifact (--print for stdout)
-piquota moshi service install|uninstall|status
-piquota moshi takeover          # make these cards the only ones on the host
-piquota moshi release           # hand publishing back to moshi-hook
 
 piquota omarchy                 # write pi-*.json records for Omarchy's Agents panel
 ```
@@ -333,125 +313,80 @@ in the box above the editor. The rail only exists in fullscreen at 140 columns o
 wider, so the suppression of that box is conditional on gentle-pi reporting its rail
 as active — in regular mode or a narrow terminal the box is the only surface.
 
-## Approvals on the phone
+## JSON feed & rp-host integration (`piquota --json`)
 
-Session notifications (session started, task complete, session ended) already reach
-the phone through moshi-hook's own generated Pi extension. **Approvals did not**, and
-the reason is precise:
+`piquota --json` provides a structured, machine-readable feed of all configured
+provider quotas. It is designed for consumption by local status bars, dynamic
+islands, background pollers, and client applications such as `rp-host` (from the
+Rp suite) without external network daemons or closed-source intermediaries:
 
+* **Predictable exit status**: exits `0` if at least one configured provider
+  answered successfully, or `1` if all providers failed or are unconfigured.
+* **`primaryWindowId`**: the CLI pre-calculates the most urgent quota window
+  (e.g., short 5h session window over weekly or monthly allowances) so consumer
+  pills or widgets do not have to implement provider-specific priority hierarchies.
+* **Percentages and Countdown**: `usedPercent` and `remainingPercent` report
+  percentages (0..100); `resetsInSec` provides the exact integer seconds until
+  reset, immune to local clock skew.
+* **`notConfigured` vs `ok`**: unconfigured providers report `notConfigured: true`,
+  allowing consumers to cleanly omit them without displaying false-positive
+  error indicators.
+
+```json
+{
+  "engine": "pi-quota",
+  "schemaVersion": 1,
+  "readOnly": true,
+  "generatedAt": "2026-10-15T05:35:21.210Z",
+  "sources": ["/home/user/.pi/agent/auth.json"],
+  "warnings": [],
+  "providers": [
+    {
+      "family": "codex",
+      "label": "Codex (Pi)",
+      "account": "user@example.com",
+      "plan": "plus",
+      "source": "/home/user/.pi/agent/auth.json",
+      "sourceKind": "pi",
+      "expiresInMin": 12650,
+      "ok": true,
+      "notConfigured": false,
+      "error": null,
+      "updatedAt": "2026-10-15T05:35:21.210Z",
+      "primaryWindowId": "5h",
+      "windows": [
+        {
+          "id": "5h",
+          "label": "5h window",
+          "usedPercent": 14.5,
+          "remainingPercent": 85.5,
+          "resetsAt": "2026-10-15T10:35:24.000Z",
+          "resetsInSec": 18003,
+          "windowSeconds": 18000,
+          "note": null
+        }
+      ]
+    }
+  ]
+}
 ```
-gentle-pi  --emits-->  pi-permission-system:permission-request  --X-->  nobody
-```
-
-`extensions/gentle-ai.ts` emits that event with
-`{ requestId, state: waiting|approved|denied, toolName, message }`. Nothing consumes
-it. moshi-hook's generated `moshi-hooks.ts` already contains the `PermissionRequest`
-envelope builder — including the comment *"Pi owns the approval prompt and decision.
-Moshi mirrors the waiting state"* — but never registers a handler that calls it, and
-Pi has no `PermissionRequest` event of its own (its API exposes `ui_prompt_start` /
-`ui_prompt_end`).
-
-`extensions/moshi-approvals.ts` is that missing handler. It is a **separate file on
-purpose**: `moshi-hooks.ts` is auto-generated by `moshi-hook install` and would
-overwrite any patch made in place.
-
-* `waiting` → `category: approval_required`, `phase: waitingForApproval`, with the
-  request id as `actionId` so the daemon can match it.
-* `approved` / `denied` → `PermissionResolved`, naming which way it went.
-* The terminal target (tmux / zellij / herdr) travels with the envelope, which is what
-  lets the daemon address the pane.
-
-Verified without Pi: the tests run a **real Unix socket** and assert the bytes that
-arrive, and the resolved socket path is checked against the one the daemon logs. This
-covers gentle-pi's guarded-command confirm, the only approval source verified to emit
-the event.
-
-### Answering the card from the phone does not reliably work, and that is not fixable here
-
-The card arrives, and the whole round trip works: the daemon opens a pending action
-and the phone's answer comes back carrying the right `actionId`. What fails is the
-daemon's own verification, in its own words:
-
-```
-tui bridge: pending-action.open sent   actionId=ca0f8118… source=pi
-tui bridge: remote action executed     type=action.approve status=sent
-tui bridge: remote action verification failed
-  reason="approval fingerprint no longer present on screen"
-```
-
-Measured over eight attempts on a live session: **1 applied, 7 came back with
-`approval fingerprint no longer present on screen`.** The daemon fingerprints the pane
-when the request arrives and re-checks that the same screen is still there when the
-answer does. Something on Pi's screen always moves in between.
-
-Two causes were tested and **rejected**, and both are worth recording so nobody
-repeats them:
-
-| Hypothesis | Test | Result |
-| --- | --- | --- |
-| The quota line redraws the pane every 60 s and invalidates the fingerprint | `/quota hide`, then approve | failed again |
-| The envelope is sent before Pi has drawn the prompt, so the daemon fingerprints an empty screen | hold the write 400 ms, then 2500 ms | failed both times |
-
-The remaining explanation is the one nothing here can change: Pi's TUI animates while
-the agent is blocked — a working indicator, at minimum — and the daemon compares exact
-captures, so a match is luck. `moshi-hook` is closed source, exposes no setting to relax
-the check, and offers no way to learn about a phone decision outside that bridge.
-
-So the card is a **notification that Pi is waiting**, not a remote control, and its
-subtitle says exactly that. Answer in the terminal. For these measurements the daemon
-ran with verbose logging, which reported `approvals.answer`, `terminal.prompt` and
-`terminal.keys` as supported capabilities — the limitation is the verification, not the
-transport.
-
-## Moshi: real cards in the Usages tab
-
-`piquota moshi push` posts to **your own paired host channel**:
-
-```
-POST {base}/hosts/{hostId}/usage
-Authorization: Bearer secret_<host-secret>
-{"snapshots":[{accountId,accountLabel,agent,hostName,capturedAt,
-               windows:[{label,usedPercentage,resetsAt}]}]}
-```
-
-`accountLabel` identifies the provider, including `"GitHub Actions"` when enabled.
-Only percentages, window labels, reset timestamps and plan names are sent — never
-a credential or an e-mail address.
-
-The publisher respects moshi-hook's own `usage_collection` setting: if you turn
-collection off, `moshi watch` pauses instead of pushing behind your back. The one
-exception is an explicit takeover, which is recorded rather than inferred — see
-[Taking over from moshi-hook's own poller](docs/MOSHI.md#taking-over-from-moshi-hooks-own-poller).
 
 ### Each provider refreshes on its own clock
 
-One shared clock was making the cards look stale: the watcher refetched everything
-every 300 s and re-pushed the same numbers five times in between, so a value could be
-five minutes old while looking freshly published.
+Anthropic's usage endpoint answers `429` when polled every minute; Codex,
+Antigravity and OpenCode Go tolerate 60 s intervals. To prevent cards from looking
+stale without triggering rate limits:
 
-The slow clock exists for exactly one provider. Anthropic's usage endpoint answers
-`429` when it is polled every minute; Codex, Antigravity and OpenCode Go are happy at
-a minute. So:
-
-| | Clock |
+| Family | Clock |
 | --- | --- |
 | Claude | **300 s** (`--claude-ttl`) |
 | Codex, Antigravity, OpenCode Go | **60 s** (`--fetch-ttl`) |
-| Push to Moshi | **30 s** (`--interval`) |
 
 `src/refresh.js` keeps a timestamp per family, requests only what is past its own
-clock, and merges the result back into the one canonical report every other surface
-reads. **Anthropic sees the same number of requests as before** — only the other
-three get fresher. `--claude-ttl` is there to tune it if your account tolerates more.
-
-A short clock is safe because a throttle is already handled twice over: `backoff.js`
-pauses that family for at least five minutes after a `429`, and `src/moshi/sticky.js`
-keeps the card showing its last real reading instead of going blank. A *permanent*
-failure (expired sign-in, missing credential) is never masked.
-
-`piquota moshi service install` runs `moshi watch` as a systemd **user** service
-(`pi-quota-moshi.service`) on Linux and WSL2. On macOS (which uses `launchd` instead of `systemd`), run `piquota moshi watch &` in the background (or inside tmux/zellij, or via a LaunchAgent plist). Full protocol notes, including how the endpoint and
-schema were recovered: [docs/MOSHI.md](docs/MOSHI.md).
+clock, and merges the result back into the canonical report. `src/sticky.js`
+keeps the last healthy snapshot during transient upstream 429 throttles so the
+user never loses visibility. Permanent failures (expired sign-in, missing
+credential) are never masked.
 
 ## Omarchy integration
 
@@ -491,12 +426,7 @@ src/providers/*.js             one file per provider; each degrades instead of t
 src/providers/github-actions.js  plan-derived org Actions minutes via authenticated gh CLI
 src/providers/antigravity-oauth.js  in-memory refresh with Google's public client
 src/providers/backoff.js       per-family throttle state
-src/moshi/client.js            paired-host publisher
-src/moshi/artifact.js          local Moshi-shaped artifact, identities redacted
-src/moshi/sticky.js            last published / last good snapshots
-src/moshi/settings.js          moshi-hook's usage_collection, and the takeover override
-src/moshi/takeover.js          the publisher record, and moshi-hook's own `set` call
-src/moshi/daemon.js            daemon restart, and proof of the value it loaded
+src/sticky.js                  last published / last good snapshots and throttle recovery
 src/engine.js                  collectQuota() -> one normalized report
 src/model.js                   window normalization, percent and reset parsing
 src/render/{theme,panel}.js    colors, thresholds, rings, bars, boxed panel
@@ -505,12 +435,11 @@ src/omarchy/record.js          pure mapping from the report to Omarchy usage rec
 src/omarchy/publish.js         atomic writer for pi-*.json, and stale-record cleanup
 src/refresh.js                 per-family refresh clocks, and the merge back into one report
 src/cli/args.js                argument parsing, and the flag/positional split
-src/exec.js                    the one place that spawns gh and moshi-hook binaries
+src/exec.js                    the one place that spawns gh CLI binary
 src/http.js                    fetch wrapper: timeouts, JSON, redaction
 contrib/systemd/               user service and timer behind `install.sh --omarchy-timer`
 bin/piquota.js                 the only CLI
 extensions/quota-panel.ts      Pi TUI line and /quota
-extensions/moshi-approvals.ts  mirrors Pi's approval prompts to the phone
 ```
 
 ## Troubleshooting
@@ -526,18 +455,13 @@ extensions/moshi-approvals.ts  mirrors Pi's approval prompts to the phone
 | `Antigravity token rejected` | Refresh failed; `/login antigravity` in Pi. `--no-refresh` disables the attempt. |
 | `no "auth" cookie for opencode.ai in N readable store(s)` | Run `piquota auth opencode`, or paste the cookie. |
 | `only encrypted Chromium stores found` | Log in with Firefox; Chrome on Windows uses DPAPI. |
-| `moshi push failed: ... rejected the host secret` | `moshi-hook pair` again. |
-| Duplicate Claude or Codex cards on the phone | moshi-hook's own poller is also publishing. `piquota moshi takeover` stops it. |
-| `could not change moshi-hook's setting` | `moshi-hook` is not on `PATH`. The takeover prints the exact command to run by hand. |
-| `the daemon still reports usage-collection on` | A restart did not take. `systemctl --user restart moshi-hook.service` and check `piquota moshi status`. |
 | `unknown flag: --x` | The flag is a typo or was removed. `piquota --help` lists every flag. |
-| `moshi-hook is not paired` | Only `moshi artifact` works until you pair. |
 | `unknown argument` | `piquota --help` lists every flag. |
 
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 294 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 242 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store
@@ -546,9 +470,9 @@ byte-identical), Claude source precedence, the five providers (including GitHub
 Actions plan resolution, opt-in gating and degradation, the two Antigravity
 failures and the OpenCode degradation), the dashboard parser's three
 strategies, the Firefox cookie reader against a synthetic SQLite database, the
-Antigravity refresh (in-memory only), the Mose Moshi payload/redaction/transport, the Omarchy record mapping and atomic writer, the renderers, the Pi
-extension contract, the approval mirror (through a real Unix socket), the per-family
-refresh clocks, argument parsing including the two silent defects it once hid, and the
+Antigravity refresh (in-memory only), sticky and last-good snapshots resilience,
+the Omarchy record mapping and atomic writer, the renderers, the Pi
+extension contract, the per-family refresh clocks, argument parsing, and the
 structure of these documents themselves (tables, fences, links, anchors).
 
 ## Acknowledgments & Prior Art
@@ -556,4 +480,4 @@ structure of these documents themselves (tables, fences, links, anchors).
 * **[shuvquota](https://github.com/shuv1337/shuvquota)** by [@shuv1337](https://github.com/shuv1337):
   Huge credit to `shuvquota` for pioneering multi-provider terminal quota monitoring across AI services. Its approach to rate-limit endpoints, dashboard parsing patterns for OpenCode Go, and terminal quota concepts served as inspiration for this project.
 
-  `piQuota` was built as a standalone, strictly read-only implementation designed specifically around [Pi Coding Agent](https://github.com/earendil-works/pi) credentials (`~/.pi/agent/auth.json`), Gentle AI orchestration, and direct Moshi mobile synchronization.
+  `piQuota` was built as a standalone, strictly read-only implementation designed specifically around [Pi Coding Agent](https://github.com/earendil-works/pi) credentials (`~/.pi/agent/auth.json`), Gentle AI orchestration, and zero-dependency JSON and desktop integrations.

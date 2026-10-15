@@ -1,14 +1,29 @@
+/**
+ * Quota snapshot persistence and transient failure resilience.
+ *
+ * Keeps the last good snapshot when a refresh fails transiently (429, timeout, 5xx).
+ * Permanent failures (expired sign-in, missing credential, rejected session)
+ * are passed through, because hiding them would be misleading.
+ */
+
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
+import { isAuthFailure } from "./providers/backoff.js";
+
+/** Maximum age for a sticky / last-good snapshot before it is considered stale (4 hours). */
+export const DEFAULT_MAX_STICKY_AGE_MS = 4 * 60 * 60 * 1000;
 
 /**
  * Rebuild the provider list in the report's own order, falling back to the
  * byFamily grouping when a caller passed an inconsistent report (empty
- * `providers`). A silent empty publish would mean zero cards, so the fallback
- * matters more than the tidy ordering.
+ * `providers`).
  *
- * @param {import("../engine.js").PiQuotaReport} report
- * @param {Map<string, import("../model.js").QuotaResult>} replacements
- * @param {Record<string, import("../model.js").QuotaResult[]>} byFamily
- * @returns {import("../model.js").QuotaResult[]}
+ * @param {import("./engine.js").PiQuotaReport} report
+ * @param {Map<string, import("./model.js").QuotaResult>} replacements
+ * @param {Record<string, import("./model.js").QuotaResult[]>} byFamily
+ * @returns {import("./model.js").QuotaResult[]}
  */
 function orderedProviders(report, replacements, byFamily) {
   if (report.providers.length === 0) {
@@ -16,18 +31,6 @@ function orderedProviders(report, replacements, byFamily) {
   }
   return report.providers.map((provider) => replacements.get(provider.family) ?? provider);
 }
-
-/**
- * Keep the last good snapshot when a refresh fails transiently.
- *
- * The Usages screen should not lose a card because one provider happened to
- * answer 429 while the daemon was polling. This merges a fresh report over the
- * previous one: a family that is still healthy wins, and a family that failed
- * for a *transient* reason keeps its previous windows instead of degrading.
- *
- * Permanent failures (expired sign-in, missing credential, rejected session)
- * are passed through, because hiding them would be misleading.
- */
 
 /**
  * Failures that are expected to clear on their own.
@@ -50,10 +53,13 @@ export function isTransientError(error) {
 }
 
 /**
- * @param {import("../engine.js").PiQuotaReport | null} previous
- * @param {import("../engine.js").PiQuotaReport} next
+ * Merge a fresh report over a previous one, preserving healthy windows when
+ * a provider fails transiently.
+ *
+ * @param {import("./engine.js").PiQuotaReport | null} previous
+ * @param {import("./engine.js").PiQuotaReport} next
  * @param {{ now?: number, maxAgeMs?: number }} [options]
- * @returns {{ report: import("../engine.js").PiQuotaReport, reused: string[] }}
+ * @returns {{ report: import("./engine.js").PiQuotaReport, reused: string[] }}
  */
 export function mergeSticky(previous, next, options = {}) {
   if (!previous) return { report: next, reused: [] };
@@ -63,9 +69,9 @@ export function mergeSticky(previous, next, options = {}) {
 
   /** @type {string[]} */
   const reused = [];
-  /** @type {Record<string, import("../model.js").QuotaResult[]>} */
+  /** @type {Record<string, import("./model.js").QuotaResult[]>} */
   const byFamily = {};
-  /** @type {Map<string, import("../model.js").QuotaResult>} */
+  /** @type {Map<string, import("./model.js").QuotaResult>} */
   const replacements = new Map();
 
   for (const [family, results] of Object.entries(next.byFamily)) {
@@ -125,21 +131,6 @@ export function mergeSticky(previous, next, options = {}) {
 }
 
 /**
- * Persist the last published report so the sticky behaviour survives a process
- * restart. Without this, a `systemctl restart` (or a one-shot push) has no
- * "previous" to fall back on and a single 429 would drop a card.
- */
-
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-
-import { isAuthFailure } from "../providers/backoff.js";
-
-/** Maximum age for a sticky / last-good snapshot before it is considered stale (4 hours). */
-export const DEFAULT_MAX_STICKY_AGE_MS = 4 * 60 * 60 * 1000;
-
-/**
  * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
  * @returns {string}
  */
@@ -152,7 +143,7 @@ export function resolveLastPublishedPath(options = {}) {
 
 /**
  * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
- * @returns {import("../engine.js").PiQuotaReport | null}
+ * @returns {import("./engine.js").PiQuotaReport | null}
  */
 export function loadLastPublished(options = {}) {
   try {
@@ -164,7 +155,7 @@ export function loadLastPublished(options = {}) {
 }
 
 /**
- * @param {import("../engine.js").PiQuotaReport} report
+ * @param {import("./engine.js").PiQuotaReport} report
  * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
  * @returns {{ ok: boolean, error?: string }}
  */
@@ -187,12 +178,7 @@ export function saveLastPublished(report, options = {}) {
 /**
  * Per-family "last good" store.
  *
- * `mergeSticky` can only carry what was last *published*. If a provider is
- * throttled before any good snapshot was ever stored, or the throttle outlives
- * the previous report, the card would simply disappear — and the user would be
- * blind to real usage precisely while a transient upstream problem is happening.
- *
- * This keeps the last *healthy* snapshot per family and restores it when that
+ * Keeps the last *healthy* snapshot per family and restores it when that
  * family fails transiently. Permanent failures (expired sign-in, missing
  * credential) are never masked, and every restore is labelled with the age of
  * the data so nothing is presented as fresher than it is.
@@ -211,7 +197,7 @@ export function resolveLastGoodPath(options = {}) {
 
 /**
  * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
- * @returns {Record<string, { result: import("../model.js").QuotaResult, savedAt: number }>}
+ * @returns {Record<string, { results?: import("./model.js").QuotaResult[], result: import("./model.js").QuotaResult, savedAt: number }>}
  */
 export function readLastGood(options = {}) {
   try {
@@ -223,7 +209,7 @@ export function readLastGood(options = {}) {
 }
 
 /**
- * @param {Record<string, { result: import("../model.js").QuotaResult, savedAt: number }>} state
+ * @param {Record<string, { results?: import("./model.js").QuotaResult[], result: import("./model.js").QuotaResult, savedAt: number }>} state
  * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
  * @returns {boolean}
  */
@@ -243,14 +229,15 @@ function writeLastGood(state, options = {}) {
 /**
  * Update the store from a report and restore transiently-failed families.
  *
- * @param {import("../engine.js").PiQuotaReport} report
+ * @param {import("./engine.js").PiQuotaReport} report
  * @param {{
  *   now?: number,
  *   env?: Record<string, string | undefined>,
  *   home?: string,
  *   path?: string,
+ *   maxAgeMs?: number,
  * }} [options]
- * @returns {{ report: import("../engine.js").PiQuotaReport, restored: string[], saved: string[] }}
+ * @returns {{ report: import("./engine.js").PiQuotaReport, restored: string[], saved: string[] }}
  */
 export function mergeLastGood(report, options = {}) {
   const now = options.now ?? Date.now();
@@ -261,9 +248,9 @@ export function mergeLastGood(report, options = {}) {
   const restored = [];
   /** @type {string[]} */
   const saved = [];
-  /** @type {Record<string, import("../model.js").QuotaResult[]>} */
+  /** @type {Record<string, import("./model.js").QuotaResult[]>} */
   const byFamily = {};
-  /** @type {Map<string, import("../model.js").QuotaResult>} */
+  /** @type {Map<string, import("./model.js").QuotaResult>} */
   const replacements = new Map();
   /** @type {string[]} */
   const warnings = [...report.warnings];

@@ -44,14 +44,13 @@ test("a non-numeric value for an own flag is reported, never silently dropped", 
 });
 
 test("subcommand value flags stay out of both positionals and unknown", () => {
-  const watch = parseArgs(["moshi", "watch", "--interval", "30", "--fetch-ttl", "300", "--claude-ttl", "180"]);
-  assert.deepEqual(watch.positionals, ["moshi", "watch"]);
-  assert.deepEqual(watch.unknown, [], "a subcommand flag is not a typo");
+  const auth = parseArgs(["auth", "opencode", "--wait", "180"]);
+  assert.deepEqual(auth.positionals, ["auth", "opencode"]);
+  assert.deepEqual(auth.unknown, [], "a subcommand flag is not a typo");
 });
 
 test("subcommand booleans stay out of unknown", () => {
   for (const argv of [
-    ["moshi", "artifact", "--print"],
     ["claude", "--no-refresh"],
     ["auth", "opencode", "--paste"],
     ["auth", "opencode", "--no-browser"],
@@ -62,8 +61,8 @@ test("subcommand booleans stay out of unknown", () => {
 });
 
 test("a subcommand value flag without a usable value is reported", () => {
-  assert.deepEqual(parseArgs(["moshi", "watch", "--interval"]).unknown, ["--interval"]);
-  assert.deepEqual(parseArgs(["moshi", "watch", "--interval", "--fetch-ttl", "300"]).unknown, ["--interval"]);
+  assert.deepEqual(parseArgs(["auth", "opencode", "--wait"]).unknown, ["--wait"]);
+  assert.deepEqual(parseArgs(["auth", "opencode", "--wait", "--no-browser"]).unknown, ["--wait"]);
 });
 
 test("--box enables the compact box widget", () => {
@@ -114,22 +113,21 @@ function runCli(argv) {
 }
 
 test("the CLI rejects an unknown flag instead of running anyway", () => {
-  // `moshi status` touches no network, so a failure here is about parsing alone.
-  const result = runCli(["moshi", "status", "--stauts"]);
+  const result = runCli(["auth", "status", "--stauts"]);
   assert.equal(result.status, 2);
   assert.match(result.stderr, /unknown flag: --stauts/);
-  assert.equal(result.stdout.includes("state dir:"), false, "the status report must not run after a rejected flag");
+  assert.equal(result.stdout.includes("Credential sources"), false, "the status report must not run after a rejected flag");
 });
 
 test("a value flag no longer turns its value into a family name", () => {
-  const result = runCli(["moshi", "status", "--ttl", "300"]);
+  const result = runCli(["auth", "status", "--ttl", "300"]);
   assert.equal(result.status, 0, `stderr was: ${result.stderr}`);
   assert.equal(result.stderr.includes("unknown argument: 300"), false);
-  assert.match(result.stdout, /Moshi/);
+  assert.match(result.stdout, /Credential sources/);
 });
 
 test("a valid report still exits zero and prints one line", () => {
-  const result = runCli(["moshi", "status"]);
+  const result = runCli(["auth", "status"]);
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /publisher:/);
+  assert.match(result.stdout, /Credential sources/);
 });

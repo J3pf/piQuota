@@ -12,10 +12,8 @@
 | **Pi TUI Extension** | ✅ Full | ✅ Full | ✅ Full | ✅ Full |
 | **OpenCode via Firefox** | `~/.mozilla/firefox/` | Auto-discovers Windows Firefox (`/mnt/c/Users/...`) | `~/Library/Application Support/Firefox/` | `%APPDATA%\Mozilla\Firefox\` |
 | **OpenCode via Chromium** | Plaintext SQLite / Keyring | ⚠️ Encrypted with Windows DPAPI (use Firefox or `--paste`) | ⚠️ Encrypted with macOS Keychain (use Firefox or `--paste`) | ⚠️ Encrypted with DPAPI (use Firefox or `--paste`) |
-| **Moshi Background Service** | `systemctl --user` | `systemctl --user` (requires WSL2 systemd enabled) | `launchd` plist agent | Task Scheduler / terminal loop |
 | **Pi `auth.json` lookup** | `~/.pi/agent/auth.json` | `~/.pi/agent/auth.json` + `/mnt/c/Users/...` (deduplicated) | `~/.pi/agent/auth.json` | `%USERPROFILE%\.pi\agent\auth.json` |
 | **Claude Code store** | `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) | same, plus `/mnt/c/Users/<profile>/.claude/.credentials.json` | `~/.claude/.credentials.json` | `%USERPROFILE%\.claude\.credentials.json` |
-| **`moshi takeover` daemon restart** | `systemctl --user restart` | `systemctl --user restart` (needs systemd enabled) | ⚠️ manual — moshi-hook has no discoverable launchd label, so the CLI tells you to restart it | n/a (no systemd user session) |
 
 ---
 
@@ -29,9 +27,6 @@ This is the primary tested environment.
   * **Recommendation:** Log in with Firefox in Windows (`piquota auth opencode`), or use manual pasting (`piquota auth opencode --paste`).
 * **Pi Credential Deduplication:**
   * If Pi credentials exist both in WSL (`~/.pi/agent/auth.json`) and Windows (`/mnt/c/Users/<user>/.pi/agent/auth.json`), `piquota` loads both and deduplicates identical accounts automatically.
-* **Background Daemon (`piquota moshi watch`):**
-  * Uses `systemctl --user`. Requires WSL2 systemd support (enabled by default in modern WSL: check `/etc/wsl.conf` has `[boot]\nsystemd=true`).
-  * Enable lingering (`loginctl enable-linger $USER`) so the service runs even when no interactive terminal is open.
 
 ---
 
@@ -40,13 +35,9 @@ This is the primary tested environment.
 * **Prerequisites:**
   * Node.js >= 20.0.0
   * Pi Coding Agent (`pi`) and Gentle AI (`npm:gentle-pi`) installed.
-  * `moshi-hook` (optional, only if using Moshi mobile app).
 * **OpenCode Go Cookie Discovery:**
   * Reads `~/.mozilla/firefox/` directly.
   * Chromium on Linux uses either plaintext SQLite or libsecret/kwallet depending on the desktop environment.
-* **Moshi Background Service:**
-  * Installed natively via `piquota moshi service install` into `~/.config/systemd/user/pi-quota-moshi.service`.
-  * Managed via `systemctl --user {status,restart,stop}`.
 
 ---
 
@@ -58,13 +49,6 @@ This is the primary tested environment.
 * **OpenCode Go Cookie Discovery:**
   * Reads `~/Library/Application Support/Firefox/Profiles/`.
   * Chrome/Brave on macOS encrypts cookies using the macOS Keychain (Safe Storage), which triggers OS-level security prompts. Use Firefox for automatic extraction, or `piquota auth opencode --paste`.
-* **Moshi Background Service:**
-  * macOS does not use `systemd`. Instead of `piquota moshi service install`, use a `launchd` agent or run the background command in a tmux/terminal session:
-    ```bash
-    # Run in background via nohup or tmux
-    piquota moshi watch --interval 60 &
-    ```
-  * Or create `~/Library/LaunchAgents/pi-quota-moshi.plist` pointing to `node $(which piquota) moshi watch`.
 
 ---
 
@@ -80,9 +64,8 @@ This is the primary tested environment.
   ```powershell
   node bin\piquota.js
   node bin\piquota.js --status
+  node bin\piquota.js --json
   ```
-* **Background Publishing:**
-  * Use Windows Task Scheduler or run `node bin\piquota.js moshi watch` inside a background terminal or Windows Service wrapper (NSSM).
 
 ---
 

@@ -10,7 +10,6 @@ import { collectQuota, FAMILIES } from "../src/engine.js";
 import { resolveFamilies } from "../src/cli/explain.js";
 import { fetchQuota } from "../src/providers/github-actions.js";
 import { renderBoxWidget } from "../src/render/panel.js";
-import { buildUsagePayload } from "../src/moshi/client.js";
 import { githubActionsSummaryBody, githubActionsUsageBody } from "./helpers.mjs";
 
 const NOW = Date.parse("2026-10-04T12:00:00.000Z");
@@ -285,7 +284,7 @@ test("GitHub Actions: repo attribution is filtered client-side and names are san
   assert.ok(gh.calls.every(({ args }) => !args.at(-1).includes("repository=")));
 });
 
-test("GitHub Actions: terminal box and Moshi payload expose the family only when present", () => {
+test("GitHub Actions: terminal box exposes the family only when present", () => {
   const paint = (_key, text) => text;
   const absent = renderBoxWidget([], paint, 100).join("\\n");
   assert.equal(absent.includes("GH Actions"), false);
@@ -311,10 +310,6 @@ test("GitHub Actions: terminal box and Moshi payload expose the family only when
   };
   const box = renderBoxWidget([provider], paint, 100).join("\\n");
   assert.match(box, /GH Actions/);
-  const payload = buildUsagePayload({ generatedAt: "2026-10-04T12:00:00.000Z", providers: [provider] });
-  assert.equal(payload.snapshots[0].accountId, "pi:github-actions");
-  assert.equal(payload.snapshots[0].accountLabel, "GitHub Actions");
-  assert.equal(payload.snapshots[0].windows[0].label, "monthly");
 });
 
 test("GitHub Actions: thrown runners and failed commands never throw from the provider", async () => {

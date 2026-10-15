@@ -3,16 +3,10 @@
  * piquota — independent, read-only quota for the credentials Pi already owns.
  *
  *   piquota                      panel for Claude, Codex, Antigravity, OpenCode Go
- *   piquota --json               normalized report
+ *   piquota --json               normalized report (used by rp-host / tools)
  *   piquota --compact | --status | --explain
  *   piquota auth opencode        open the OpenCode login and capture the session
  *   piquota auth status          show which credential sources are reachable
- *   piquota moshi push           publish the quota to the paired Moshi host
- *   piquota moshi watch          keep publishing on an interval
- *   piquota moshi artifact       write the local Moshi-shaped artifact
- *   piquota moshi service ...    install/remove the user service that runs `moshi watch`
- *   piquota moshi takeover       become the only usage publisher on the paired host
- *   piquota moshi release        hand usage publishing back to moshi-hook's own poller
  *   piquota omarchy              publish pi-*.json records for Omarchy's Agents bar panel
  *   piquota gentle-pi <status|apply|revert>
  *                                the rail slot gentle-pi needs to paint the quota card
@@ -22,29 +16,27 @@ import { clearCache, withCache } from "../src/cache.js";
 import { parseArgs } from "../src/cli/args.js";
 import { runAuthCommand } from "../src/cli/commands/auth.js";
 import { runGentlePiCommand } from "../src/cli/commands/gentle-pi.js";
-import { runMoshiCommand } from "../src/cli/commands/moshi.js";
 import { runOmarchyCommand } from "../src/cli/commands/omarchy.js";
 import { explainLines, resolveFamilies } from "../src/cli/explain.js";
 import { err, out } from "../src/cli/output.js";
 import { collectQuota, enabledFamilies } from "../src/engine.js";
 import { redact } from "../src/http.js";
-import { mergeLastGood } from "../src/moshi/sticky.js";
+import { mergeLastGood } from "../src/sticky.js";
 import { renderBoxWidget, renderCompact, renderPanel, renderStatusLine } from "../src/render/panel.js";
 import { ansiPalette } from "../src/render/theme.js";
 
-const VERSION = "0.10.4";
+const VERSION = "0.11.0";
 
 const HELP = `piquota ${VERSION} — read-only quota from Pi's provider credentials
 
 Usage:
   piquota [families...] [flags]
   piquota auth <opencode|status> [flags]
-  piquota moshi <push|watch|artifact|status|service|takeover|release> [flags]
   piquota gentle-pi <status|apply|revert>
   piquota omarchy
 
 Quota:
-  --json             Emit the normalized report as JSON
+  --json             Emit the normalized report as JSON (for rp-host and automations)
   --compact, -c      One line per provider
   --status           Single line with rings
   --box              Compact right-aligned 5-row box widget
@@ -65,18 +57,6 @@ Auth (OpenCode Go session, the only credential Pi does not store):
                                    print the URL without launching a browser
   piquota auth opencode --wait <s> how long to wait for the login (default 180)
   piquota auth status              report every credential source
-
-Moshi:
-  piquota moshi push               publish once to the paired host channel
-  piquota moshi watch              publish every --interval seconds (default 30)
-                                   refetch every --fetch-ttl seconds (default 60)
-                                   Claude refetches every --claude-ttl seconds (default 300)
-  piquota moshi artifact           write the local artifact (--print to stdout)
-  piquota moshi status             pairing, publisher mode and usage-collection state
-  piquota moshi service install    run \`moshi watch\` as a systemd user service
-  piquota moshi service uninstall  remove that service
-  piquota moshi takeover           stop moshi-hook's own poller so only these cards exist
-  piquota moshi release            restore moshi-hook's own poller and stop overriding it
 
 Omarchy:
   piquota omarchy                  write pi-<family>.json records for Omarchy's Agents bar panel
@@ -134,11 +114,6 @@ async function main() {
     return runGentlePiCommand(sub);
   }
 
-  if (command === "moshi") {
-    const sub = bare[1] ?? "status";
-    return runMoshiCommand(sub, argv, { agentMode, refresh, timeoutMs: args.timeoutMs });
-  }
-
   if (command === "omarchy") {
     const load = async () => {
       const everyFamily = enabledFamilies({ env: process.env });
@@ -152,7 +127,7 @@ async function main() {
   }
 
   const { families, unknown, explicit } = resolveFamilies(
-    command === "quota" ? bare.slice(1) : bare.filter((value) => value !== "moshi" && value !== "quota"),
+    command === "quota" ? bare.slice(1) : bare.filter((value) => value !== "quota"),
   );
 
   if (unknown.length > 0) {

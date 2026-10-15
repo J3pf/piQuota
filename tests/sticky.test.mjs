@@ -1,18 +1,20 @@
 /**
- * Moshi publisher tests: payload shape, redaction and transport behaviour.
- * Every request is served by a fixture; nothing reaches the network.
+ * Sticky snapshots and last-good cache tests: transient failure resilience.
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { buildUsagePayload, pushUsage, readHostCredentials, secondPrecision } from "../src/moshi/client.js";
-import { buildArtifact } from "../src/moshi/artifact.js";
-import { readUsageCollection } from "../src/moshi/settings.js";
-import { jsonResponse, routedFetch } from "./helpers.mjs";
+import {
+  isTransientError,
+  loadLastPublished,
+  mergeLastGood,
+  mergeSticky,
+  saveLastPublished,
+} from "../src/sticky.js";
 
 const NOW = "2026-09-12T16:50:46.123Z";
 
@@ -64,142 +66,11 @@ function report(providers) {
     sources: ["/tmp/auth.json"],
     warnings: [],
     providers,
-    byFamily: {},
+    byFamily: Object.fromEntries(providers.map((p) => [p.family, [p]])),
   };
 }
 
-test("timestamps are reduced to the second precision this wire uses", () => {
-  assert.equal(secondPrecision("2026-09-12T16:50:46.123Z"), "2026-09-12T16:50:46Z");
-  assert.equal(secondPrecision(null), null);
-  assert.equal(secondPrecision("garbage"), null);
-});
-
-test("the usage payload matches the observed Moshi schema", () => {
-  const payload = buildUsagePayload(report([provider()]), { hostName: "TESTHOST" });
-
-  assert.equal(payload.snapshots.length, 1);
-  const snapshot = payload.snapshots[0];
-  assert.equal(snapshot.accountId, "pi:codex");
-  assert.equal(snapshot.accountLabel, "Codex (Pi)");
-  assert.equal(snapshot.agent, "codex");
-  assert.equal(snapshot.hostName, "TESTHOST");
-  assert.equal(snapshot.capturedAt, "2026-09-12T16:50:46Z");
-  assert.deepEqual(snapshot.windows[0], { label: "5h", usedPercentage: 19.46, resetsAt: "2026-09-12T13:10:17Z" });
-  assert.deepEqual(snapshot.windows[1], { label: "weekly", usedPercentage: 3 });
-});
-
-test("account ids are stable per family and never derived from a secret", () => {
-  const first = buildUsagePayload(report([provider()]));
-  const second = buildUsagePayload(report([provider({ account: "someone-else@example.com" })]));
-  assert.equal(first.snapshots[0].accountId, second.snapshots[0].accountId);
-
-  const duplicates = buildUsagePayload(report([provider(), provider()]));
-  assert.deepEqual(duplicates.snapshots.map((snapshot) => snapshot.accountId), ["pi:codex", "pi:codex:2"]);
-});
-
-test("agents map onto the union the server accepts, with Pi carried by the label", () => {
-  const payload = buildUsagePayload(report([
-    provider(),
-    provider({ family: "claude", label: "Claude (Pi)" }),
-    provider({ family: "antigravity", label: "Antigravity (Pi)" }),
-    provider({ family: "opencode-go", label: "OpenCode Go (Pi)" }),
-  ]));
-  assert.deepEqual(payload.snapshots.map((snapshot) => snapshot.agent), ["codex", "claude-code", "antigravity", "opencode"]);
-  assert.deepEqual(payload.snapshots.map((snapshot) => snapshot.accountLabel), [
-    "Codex (Pi)",
-    "Claude (Pi)",
-    "Antigravity (Pi)",
-    "OpenCode Go (Pi)",
-  ]);
-});
-
-test("the rejected \"pi\" agent id is still available explicitly, for diagnostics", () => {
-  const payload = buildUsagePayload(report([provider()]), { agentMode: "pi" });
-  assert.equal(payload.snapshots[0].agent, "pi");
-});
-
-test("degraded providers and window-less providers are not published", () => {
-  const payload = buildUsagePayload(
-    report([
-      provider({ family: "antigravity", ok: false, error: "expired" }),
-      provider({ family: "opencode-go", windows: [] }),
-    ]),
-  );
-  assert.deepEqual(payload.snapshots, []);
-});
-
-test("the payload never contains credential material", () => {
-  const serialized = JSON.stringify(buildUsagePayload(report([provider()])));
-  for (const secret of ["sk-ant", "ya29", "eyJ", "user@example.com", "rt.1"]) {
-    assert.equal(serialized.includes(secret), false, `payload leaked ${secret}`);
-  }
-});
-
-test("pushUsage posts to the paired host channel with the host secret", async () => {
-  const { fetchFn, calls } = routedFetch([["api.getmoshi.app", () => jsonResponse({ ok: true })]]);
-  const payload = buildUsagePayload(report([provider()]));
-
-  const result = await pushUsage(payload, { hostId: "host_test", hostSecret: "secret_test", fetchFn });
-  assert.equal(result.ok, true);
-  assert.equal(result.pushed, 1);
-  assert.equal(calls[0].url, "https://api.getmoshi.app/api/v1/hosts/host_test/usage");
-  assert.equal(calls[0].init.headers.Authorization, "Bearer secret_test");
-  assert.equal(JSON.parse(calls[0].init.body).snapshots.length, 1);
-});
-
-test("pushUsage reports a rejected host secret without leaking it", async () => {
-  const { fetchFn } = routedFetch([["api.getmoshi.app", () => jsonResponse({}, { status: 401 })]]);
-  const result = await pushUsage(buildUsagePayload(report([provider()])), {
-    hostId: "host_test",
-    hostSecret: "secret_supersecret",
-    fetchFn,
-  });
-  assert.equal(result.ok, false);
-  assert.match(result.error ?? "", /rejected the host secret/);
-  assert.equal((result.error ?? "").includes("supersecret"), false);
-});
-
-test("pushUsage does nothing when there is nothing to publish", async () => {
-  const result = await pushUsage({ snapshots: [] }, {});
-  assert.equal(result.ok, true);
-  assert.equal(result.pushed, 0);
-});
-
-test("host credentials are read from moshi-hook's own store, and its absence is explicit", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-quota-moshi-"));
-  const missing = readHostCredentials({ stateDir: dir });
-  assert.equal(missing.ok, false);
-  assert.match(/** @type {{ error: string }} */ (missing).error, /not paired/);
-
-  const secrets = join(dir, "secrets.json");
-  writeFileSync(secrets, JSON.stringify({ "host-id": "host_1", "host-secret": "secret_1", "host-display-name": "BOX" }));
-  const found = readHostCredentials({ stateDir: dir });
-  assert.equal(found.ok, true);
-  assert.deepEqual(Object.keys(found), ["ok", "hostId", "hostSecret", "hostName"]);
-});
-
-test("the local artifact redacts identities and carries no tokens", () => {
-  const artifact = buildArtifact(report([provider()]));
-  const serialized = JSON.stringify(artifact);
-  assert.equal(serialized.includes("user@example.com"), false);
-  assert.equal(artifact.readOnly, true);
-  assert.equal(artifact.snapshots[0].account, "us***@example.com");
-  assert.equal(artifact.snapshots[0].authoritative, false);
-});
-
-test("moshi-hook's usage-collection setting is respected in every documented form", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-quota-moshi-cfg-"));
-  const path = join(dir, "config.toml");
-  for (const [value, enabled] of [["true", true], ["on", true], ["off", false], ["false", false]]) {
-    writeFileSync(path, `[gateway]\nusage_collection = ${value}\n`);
-    assert.equal(readUsageCollection({ configPath: path }).enabled, enabled, `value ${value}`);
-  }
-  assert.equal(readUsageCollection({ configPath: join(dir, "missing.toml") }).enabled, true);
-});
-
-test("a transient upstream failure keeps the previous snapshot on the card", async () => {
-  const { mergeSticky, isTransientError } = await import("../src/moshi/sticky.js");
-
+test("a transient upstream failure keeps the previous snapshot on the card", () => {
   assert.equal(isTransientError("Claude usage request failed: rate limited (HTTP 429); retry in 30s"), true);
   assert.equal(isTransientError("Claude usage request failed: HTTP 503"), true);
   assert.equal(isTransientError("request timed out"), true);
@@ -230,14 +101,12 @@ test("a transient upstream failure keeps the previous snapshot on the card", asy
   assert.equal(notMasked.report.providers[0].ok, false);
 });
 
-test("mergeSticky is a no-op without a previous report", async () => {
-  const { mergeSticky } = await import("../src/moshi/sticky.js");
+test("mergeSticky is a no-op without a previous report", () => {
   const fresh = report([provider()]);
   assert.equal(mergeSticky(null, fresh).report, fresh);
 });
 
-test("the last published report survives a restart so a 429 cannot drop a card", async () => {
-  const { loadLastPublished, saveLastPublished } = await import("../src/moshi/sticky.js");
+test("the last published report survives a restart so a 429 cannot drop a card", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-last-"));
   const path = join(dir, "last-published.json");
 
@@ -249,22 +118,7 @@ test("the last published report survives a restart so a 429 cannot drop a card",
   assert.equal(restored.providers[0].windows.length, 2);
 });
 
-test("windows are translated into Moshi's own vocabulary", async () => {
-  const { moshiWindowLabel } = await import("../src/moshi/client.js");
-  const make = (id, label) => ({ id, label, usedPercent: 1, remainingPercent: 99, resetsAt: null, resetsInSec: null, windowSeconds: null, note: null });
-
-  assert.equal(moshiWindowLabel(make("5h", "5h window")), "5h");
-  assert.equal(moshiWindowLabel(make("weekly", "Weekly window")), "weekly");
-  assert.equal(moshiWindowLabel(make("monthly", "Monthly window")), "monthly");
-  // Antigravity's per-group windows keep the group as a prefix.
-  assert.equal(moshiWindowLabel(make("gemini-5h", "Gemini · 5h")), "Gemini · 5h");
-  assert.equal(moshiWindowLabel(make("claude-gpt-weekly", "Claude/GPT · weekly")), "Claude/GPT · weekly");
-  // Anything unrecognized keeps its human label.
-  assert.equal(moshiWindowLabel(make("credits", "Credits")), "Credits");
-});
-
-test("a throttled family keeps showing its last known real values", async () => {
-  const { mergeLastGood } = await import("../src/moshi/sticky.js");
+test("a throttled family keeps showing its last known real values", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-lastgood-"));
   const path = join(dir, "last-good.json");
   const NOW = 1_800_000_000_000;
@@ -301,8 +155,7 @@ test("a throttled family keeps showing its last known real values", async () => 
   assert.match(fourth.report.warnings.join(" "), /discarded last known values because they are stale/);
 });
 
-test("an expired credential (expiresInMin <= 0) is never masked by mergeLastGood or mergeSticky", async () => {
-  const { mergeLastGood, mergeSticky } = await import("../src/moshi/sticky.js");
+test("an expired credential (expiresInMin <= 0) is never masked by mergeLastGood or mergeSticky", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-expired-"));
   const path = join(dir, "last-good.json");
   const NOW = 1_800_000_000_000;
@@ -332,8 +185,7 @@ test("an expired credential (expiresInMin <= 0) is never masked by mergeLastGood
   assert.equal(lastGoodResult.report.providers[0].ok, false);
 });
 
-test("a backoff message still restores the last known values", async () => {
-  const { mergeLastGood } = await import("../src/moshi/sticky.js");
+test("a backoff message still restores the last known values", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-backoff-carry-"));
   const path = join(dir, "last-good.json");
   const NOW = 1_800_000_000_000;
@@ -351,8 +203,7 @@ test("a backoff message still restores the last known values", async () => {
   assert.equal(result.report.providers[0].windows.length, 2);
 });
 
-test("carrying a snapshot never reorders the providers", async () => {
-  const { mergeSticky, mergeLastGood } = await import("../src/moshi/sticky.js");
+test("carrying a snapshot never reorders the providers", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-order-"));
   const NOW = 1_800_000_000_000;
 

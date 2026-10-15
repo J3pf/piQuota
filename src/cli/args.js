@@ -28,16 +28,12 @@ const VALUE_FLAGS = new Set(["--ttl", "--timeout"]);
 
 /**
  * Flags a subcommand consumes from the raw argv, collected here only so the parser
- * can tell a real typo apart from a flag that belongs to `auth` or `moshi`.
- *
- * Without this list every `moshi watch --interval 60` looked like an unknown flag,
- * which is why the unknown-argument check was never wired up: a wrong flag was
- * silently ignored instead of reported.
+ * can tell a real typo apart from a flag that belongs to subcommands like `auth`.
  */
-const SUBCOMMAND_VALUE_FLAGS = new Set(["--interval", "--fetch-ttl", "--claude-ttl", "--wait"]);
+const SUBCOMMAND_VALUE_FLAGS = new Set(["--wait"]);
 
 /** Boolean flags owned by a subcommand. */
-const SUBCOMMAND_FLAGS = new Set(["--paste", "--no-browser", "--print", "--no-refresh"]);
+const SUBCOMMAND_FLAGS = new Set(["--paste", "--no-browser", "--no-refresh"]);
 
 /**
  * What to name in an "unknown flag" report.

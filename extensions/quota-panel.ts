@@ -26,7 +26,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-// `mergeLastGood` is intentionally NOT imported here: it lives in src/moshi/sticky.js
+// `mergeLastGood` is intentionally NOT imported here: it lives in src/sticky.js
 // and the CLI (`bin/piquota.js`) already applies it on every `--json` run, so the
 // extension sees a report whose transiently-failed families already carry the last
 // good snapshot in `provider.note`. The classifier below mirrors src/providers/error-kind.js

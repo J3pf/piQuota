@@ -1,11 +1,9 @@
 /**
  * The one place that spawns foreign binaries.
  *
- * piQuota delegates GitHub API requests to the user's authenticated `gh` CLI and
- * uses moshi-hook's own CLI to change its usage-collection setting through the
- * supported interface rather than editing its config file. Callers must degrade
- * on missing binaries, non-zero exits and timeouts; external commands must never
- * make quota collection throw.
+ * piQuota delegates GitHub API requests to the user's authenticated `gh` CLI.
+ * Callers must degrade on missing binaries, non-zero exits and timeouts;
+ * external commands must never make quota collection throw.
  */
 
 import { spawnSync } from "node:child_process";

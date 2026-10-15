@@ -24,7 +24,7 @@
  * The classification is intentionally regex-based and conservative: a
  * misclassified permanent error masked as transient would hide a real
  * problem. Only patterns that already exist in the codebase (see
- * providers/backoff.js for `isAuthFailure`, moshi/sticky.js for the
+ * providers/backoff.js for `isAuthFailure`, sticky.js for the
  * `TRANSIENT` set) qualify.
  */
 

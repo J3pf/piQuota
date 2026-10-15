@@ -77,8 +77,6 @@ fail() { printf '\033[31m✗\033[0m %s\n' "$*"; exit 1; }
 if [[ "$MODE" == "uninstall" ]]; then
   echo "Uninstalling pi-quota..."
   if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user disable --now pi-quota-moshi.service >/dev/null 2>&1 || true
-    rm -f "$HOME/.config/systemd/user/pi-quota-moshi.service"
     systemctl --user disable --now piquota-omarchy.timer >/dev/null 2>&1 || true
     rm -f "$UNIT_DIR/piquota-omarchy.timer" "$UNIT_DIR/piquota-omarchy.service"
     systemctl --user daemon-reload >/dev/null 2>&1 || true
@@ -87,7 +85,7 @@ if [[ "$MODE" == "uninstall" ]]; then
   OMARCHY_DIR="${PI_QUOTA_OMARCHY_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage}"
   rm -f "$OMARCHY_DIR"/pi-*.json
   rm -f "$BIN_DIR/piquota" "$BIN_DIR/shuvquota"
-  rm -f "$EXT_DIR/quota-panel.ts" "$EXT_DIR/moshi-approvals.ts"
+  rm -f "$EXT_DIR/quota-panel.ts"
   # The rail slot only exists for the extension that reads it, so leaving it behind
   # would keep a patched third-party package with no consumer.
   if [[ -f "$PREFIX/src/gentle-pi/rail-patch.js" ]]; then
@@ -162,7 +160,6 @@ case "$OS_TYPE" in
       log "            Windows Chrome/Edge use DPAPI encryption; use Firefox for OpenCode Go."
     else
       ok "Platform: Native Linux"
-      log "Linux notice: systemd user service available for background Moshi sync."
     fi
     ;;
   Darwin*)
@@ -244,23 +241,6 @@ if [[ -f "$PREFIX/src/gentle-pi/rail-patch.js" ]]; then
   fi
 fi
 
-# Approval mirroring only makes sense with a daemon to mirror to.
-if command -v moshi-hook >/dev/null 2>&1; then
-  install_extension "moshi-approvals.ts" "Pi approval mirror"
-else
-  log "skipped the approval mirror: it needs moshi-hook as the daemon to send to"
-fi
-
-# Replacing ~/.local/share/pi-quota leaves a running watcher executing the old code
-# from memory, so an upgrade would silently keep the previous cadence. Restart it.
-if command -v systemctl >/dev/null 2>&1; then
-  if [[ "$(systemctl --user is-active pi-quota-moshi.service 2>/dev/null)" == "active" ]]; then
-    systemctl --user restart pi-quota-moshi.service >/dev/null 2>&1 \
-      && ok "restarted pi-quota-moshi.service so the new code takes effect" \
-      || warn "pi-quota-moshi.service is running the previous code; run: systemctl --user restart pi-quota-moshi.service"
-  fi
-fi
-
 # --- Omarchy Agents panel timer (opt-in) ---
 if [[ "$OMARCHY_TIMER" == "true" ]]; then
   if ! command -v systemctl >/dev/null 2>&1; then
@@ -315,19 +295,6 @@ if [[ "$CLAUDE_CODE" == "yes" && "$PI_ANTHROPIC" == "yes" ]]; then
   log "        Both sources exist; the Claude Code CLI wins. Override with PI_QUOTA_CLAUDE_SOURCE=pi"
 fi
 
-# --- Moshi Detection ---
-if command -v moshi-hook >/dev/null 2>&1; then
-  MOSHI_VER="$(moshi-hook version 2>/dev/null | head -1 || echo "detected")"
-  ok "moshi-hook found: $MOSHI_VER"
-  if [[ -f "$HOME/.local/state/moshi/secrets.json" ]]; then
-    ok "moshi-hook paired with host secret (\`piquota moshi push\` ready)"
-  else
-    warn "moshi-hook found but not paired yet; run \`moshi-hook pair\` to link your mobile app"
-  fi
-else
-  log "moshi-hook not installed (optional — needed only if syncing to the Moshi mobile app: https://getmoshi.app)"
-fi
-
 if compgen -G "/mnt/c/Users/*/AppData/Roaming/Mozilla/Firefox/Profiles/*/cookies.sqlite" >/dev/null 2>&1 \
    || compgen -G "$HOME/.mozilla/firefox/*/cookies.sqlite" >/dev/null 2>&1 \
    || compgen -G "$HOME/Library/Application Support/Firefox/Profiles/*/cookies.sqlite" >/dev/null 2>&1; then
@@ -343,9 +310,8 @@ echo "=========================================="
 echo "Verify with:"
 log "piquota --explain      # verify credential store resolution"
 log "piquota                # test the CLI panel"
+log "piquota --json         # JSON output for rp-host and automations"
 log "piquota auth status    # check OpenCode Go session discovery"
-log "piquota moshi status   # check Moshi integration status"
 log "piquota omarchy       # write the Omarchy Agents panel records once (see --omarchy-timer)"
-log "piquota moshi takeover # make piQuota the only usage publisher (removes duplicate cards)"
 log "/quota                 # reload or start Pi and run inside TUI"
 echo

@@ -11,8 +11,6 @@ import test from "node:test";
 
 import { collectQuota } from "../src/engine.js";
 import { clearCache, readCache, withCache, writeCache } from "../src/cache.js";
-import { buildArtifact, writeArtifact } from "../src/moshi/artifact.js";
-import { readUsageCollection } from "../src/moshi/settings.js";
 import {
   antigravityUsageBody,
   claudeUsageBody,
@@ -196,52 +194,8 @@ test("withCache merges a partial family query without poisoning the full cache",
   assert.deepEqual(Object.keys(cachedFull.report.byFamily).sort(), ["antigravity", "claude", "codex", "opencode-go"]);
 });
 
-test("the Moshi artifact uses moshi-hook field names and redacts identities", async () => {
-  const { fetchFn } = fullRoutes();
-  const report = await collectQuota({ paths: [FIXTURE], claudeCodePaths: [], now: NOW, fetchFn, env: {}, stores: [], allowBrowser: false });
-  const artifact = buildArtifact(report);
-
-  assert.equal(artifact.readOnly, true);
-  assert.equal(artifact.snapshots.length, 4);
-  const codex = artifact.snapshots.find((snapshot) => snapshot.family === "codex");
-  assert.ok(codex);
-  assert.equal(codex.agent, "pi");
-  assert.equal(codex.authoritative, false);
-  assert.equal(codex.windows[0].kind, "5h");
-
-  const serialized = JSON.stringify(artifact);
-  assert.equal(serialized.includes("sk-ant-oat01"), false);
-  assert.equal(serialized.includes("fixture@example.com"), false);
-  assert.equal(serialized.includes("sk-FAKE-zen"), false);
-});
-
-test("the artifact write is atomic and mode-restricted", () => {
-  const directory = mkdtempSync(join(tmpdir(), "pi-quota-state-"));
-  const path = join(directory, "nested", "moshi-usage.json");
-  const written = writeArtifact({ artifactVersion: 1, snapshots: [] }, path);
-  assert.equal(written.ok, true);
-  assert.equal(JSON.parse(readFileSync(path, "utf-8")).snapshots.length, 0);
-});
-
-test("moshi-hook usage-collection settings are understood in all documented forms", () => {
-  const directory = mkdtempSync(join(tmpdir(), "pi-quota-moshi-"));
-  const path = join(directory, "config.toml");
-
-  const write = (value) => {
-    writeFileSync(path, `[gateway]\nusage_collection = ${value}\n`);
-  };
-  for (const [value, enabled] of [["true", true], ["on", true], ["off", false], ["false", false]]) {
-    write(value);
-    assert.equal(readUsageCollection({ configPath: path }).enabled, enabled, `value ${value}`);
-  }
-  write('"5m"');
-  const interval = readUsageCollection({ configPath: path });
-  assert.equal(interval.enabled, true);
-  assert.equal(interval.intervalSec, 300);
-});
-
 test("the terminal surface also shows last known values while a provider is throttled", async () => {
-  const { mergeLastGood } = await import("../src/moshi/sticky.js");
+  const { mergeLastGood } = await import("../src/sticky.js");
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-cli-lastgood-"));

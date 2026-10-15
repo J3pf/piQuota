@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { mergeLastGood } from "../src/moshi/sticky.js";
+import { mergeLastGood } from "../src/sticky.js";
 
 const EXTENSION = new URL("../extensions/quota-panel.ts", import.meta.url).href;
 const RAIL_PATCH_MODULE = fileURLToPath(new URL("../src/gentle-pi/rail-patch.js", import.meta.url));

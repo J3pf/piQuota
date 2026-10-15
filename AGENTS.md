@@ -7,7 +7,7 @@ Instructions, architecture rules, and testing guidelines for AI coding agents wo
 `piQuota` is a standalone, zero-dependency quota monitor for AI providers configured in the [Pi Coding Agent](https://github.com/earendil-works/pi) ecosystem. It aggregates real-time quota, reset countdowns, and subscription tiers across multiple AI providers (Claude, OpenAI Codex, Antigravity, OpenCode Go) across multiple surfaces:
 - **Terminal CLI**: `piquota` (boxed widget, compact line, status, JSON).
 - **Pi TUI Extension**: `/quota`, custom editor rail widget, and gentle-pi sidebar integration.
-- **Moshi Mobile Synchronization**: Background publisher and approval card reflection.
+- **JSON & External Integrations**: `piquota --json` structured quota feed for `rp-host` and automation tools.
 
 ### Core Philosophy
 1. **Credentials Pi Already Owns**: Do not duplicate authentication or invent new login workflows when credentials already exist in `~/.pi/agent/auth.json` or `~/.claude/.credentials.json`.
@@ -73,7 +73,7 @@ Any modification to this codebase MUST uphold these non-negotiable guarantees:
    - **Claude Code Store**: The refresh token from `~/.claude/.credentials.json` is never loaded into memory.
 3. **Zero Secret Leakage**:
    - Never print, log, cache, or transmit tokens, refresh tokens, session keys, or API keys.
-   - Redact email addresses and identity markers in exported JSON artifacts and Moshi payloads via `src/http.js:redact`.
+   - Redact email addresses and identity markers in exported JSON artifacts via `src/http.js:redact`.
 4. **Filesystem Boundaries**:
    - Caches and state files are restricted to `~/.cache/pi-quota/` and `~/.local/state/pi-quota/`.
    - File writes must be atomic (write to temporary file, then `renameSync`).
