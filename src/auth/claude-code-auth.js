@@ -22,12 +22,17 @@ import { existsSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync,
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { runCommand } from "../exec.js";
+
 /** Windows-side profiles reachable from WSL, discovered without spawning cmd.exe. */
 const WINDOWS_USERS_ROOT = "/mnt/c/Users";
 const MAX_WINDOWS_PROFILES = 40;
 
 const CREDENTIALS_NAME = ".credentials.json";
 const PROFILE_NAME = ".claude.json";
+
+/** macOS: Claude Code keeps the same JSON blob in the login Keychain instead of a file. */
+export const KEYCHAIN_SERVICE = "Claude Code-credentials";
 
 export const DEFAULT_LABEL = "Claude (Pi)";
 export const OAUTH_REFRESH_LOCK_NAME = ".oauth_refresh.lock";
@@ -226,6 +231,56 @@ export function readClaudeCodeCredentialFile(path) {
 }
 
 /**
+ * Whether the macOS Keychain is a legitimate Claude Code source for these options.
+ *
+ * An explicit credentials path or a relocated config directory means the user
+ * chose a file; Claude Code also derives a different Keychain service name for a
+ * relocated directory, so the default entry would be the wrong account.
+ *
+ * The login Keychain belongs to the real user: with a substituted `home` (tests,
+ * sandboxes) it is skipped unless a reader is injected.
+ *
+ * @param {{ env?: Record<string, string | undefined>, platform?: string, paths?: string[] | null, home?: string, keychainReader?: () => string | null }} options
+ * @returns {boolean}
+ */
+function keychainApplies(options) {
+  const env = options.env ?? process.env;
+  if ((options.platform ?? process.platform) !== "darwin") return false;
+  if (options.paths) return false;
+  if (options.home && options.home !== homedir() && typeof options.keychainReader !== "function") return false;
+  return !text(env.PI_QUOTA_CLAUDE_CODE_CREDENTIALS) && !text(env.CLAUDE_CONFIG_DIR);
+}
+
+/**
+ * Read Claude Code's login Keychain entry. Read-only (`find-generic-password`),
+ * never throws; the first read may raise macOS's own access prompt.
+ *
+ * @param {{ keychainReader?: () => string | null }} [options]
+ * @returns {{ ok: true, oauth: Record<string, unknown> } | { ok: false, error: string }}
+ */
+export function readClaudeCodeKeychain(options = {}) {
+  let raw = null;
+  if (typeof options.keychainReader === "function") {
+    raw = options.keychainReader();
+  } else {
+    const result = runCommand("security", ["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"], { timeoutMs: 10_000 });
+    if (result.status === 0) raw = result.stdout.trim();
+  }
+  if (!raw) return { ok: false, error: `no "${KEYCHAIN_SERVICE}" item in the macOS Keychain (or access was denied)` };
+
+  let oauth;
+  try {
+    oauth = JSON.parse(raw)?.claudeAiOauth;
+  } catch {
+    return { ok: false, error: `the "${KEYCHAIN_SERVICE}" Keychain item is not valid JSON` };
+  }
+  if (!oauth || typeof oauth !== "object") {
+    return { ok: false, error: `the "${KEYCHAIN_SERVICE}" Keychain item has no claudeAiOauth block; run \`claude\` once to sign in` };
+  }
+  return { ok: true, oauth };
+}
+
+/**
  * @param {string | undefined} path
  * @returns {string}
  */
@@ -286,9 +341,38 @@ export function recoverStaleClaudeLock(configDir, options = {}) {
  */
 export function loadClaudeCodeCredential(options = {}) {
   const paths = options.paths ?? resolveClaudeCodeCredentialPaths(options);
-  if (paths.length === 0) {
+  const useKeychain = keychainApplies(options);
+  if (paths.length === 0 && !useKeychain) {
     return { ok: false, credential: null, error: missingMessage(claudeCodeCandidatePaths(options)[0]), paths: [] };
   }
+
+  /**
+   * @param {Record<string, unknown>} oauth
+   * @param {string} source
+   */
+  const toCredential = (oauth, source) => {
+    const access = text(oauth.accessToken);
+    if (!access) return null;
+    const email = readClaudeCodeProfile(options).email ?? null;
+    return {
+      provider: "claude-code",
+      family: "claude",
+      label: DEFAULT_LABEL,
+      sourceKind: "claude-code",
+      source,
+      identity: email ?? fingerprint(["claude-code", access]),
+      access,
+      // Only the access token's own expiry is exposed. The refresh token and its
+      // expiry are never read or carried, because nothing here may act on them.
+      expiresAtMs: epochMs(oauth.expiresAt),
+      accountId: null,
+      projectId: null,
+      email,
+      planType: text(oauth.subscriptionType),
+      rateLimitTier: text(oauth.rateLimitTier),
+      kind: "oauth",
+    };
+  };
 
   let lastError = null;
   let recoveredLock = null;
@@ -303,37 +387,22 @@ export function loadClaudeCodeCredential(options = {}) {
       continue;
     }
 
-    const access = text(read.oauth.accessToken);
-    if (!access) {
+    const credential = toCredential(read.oauth, path);
+    if (!credential) {
       return { ok: false, credential: null, error: `no Claude Code access token in ${path}; run \`claude\` once to sign in`, paths, recoveredLock };
     }
+    return { ok: true, paths, recoveredLock, credential };
+  }
 
-    const profile = readClaudeCodeProfile(options);
-    const email = profile.email ?? null;
-
-    return {
-      ok: true,
-      paths,
-      recoveredLock,
-      credential: {
-        provider: "claude-code",
-        family: "claude",
-        label: DEFAULT_LABEL,
-        sourceKind: "claude-code",
-        source: path,
-        identity: email ?? fingerprint(["claude-code", access]),
-        access,
-        // Only the access token's own expiry is exposed. The refresh token and its
-        // expiry are never read or carried, because nothing here may act on them.
-        expiresAtMs: epochMs(read.oauth.expiresAt),
-        accountId: null,
-        projectId: null,
-        email,
-        planType: text(read.oauth.subscriptionType),
-        rateLimitTier: text(read.oauth.rateLimitTier),
-        kind: "oauth",
-      },
-    };
+  if (useKeychain) {
+    const read = readClaudeCodeKeychain(options);
+    if (read.ok) {
+      const credential = toCredential(read.oauth, `macOS Keychain (${KEYCHAIN_SERVICE})`);
+      if (credential) return { ok: true, paths, recoveredLock, credential };
+      lastError = `no Claude Code access token in the macOS Keychain item "${KEYCHAIN_SERVICE}"; run \`claude\` once to sign in`;
+    } else {
+      lastError = lastError ?? read.error;
+    }
   }
 
   return { ok: false, credential: null, error: lastError ?? missingMessage(claudeCodeCandidatePaths(options)[0]), paths, recoveredLock };
@@ -376,6 +445,26 @@ export function describeClaudeCodeSource(options = {}) {
     plan: null,
     error: path === null ? missingMessage(claudeCodeCandidatePaths(options)[0]) : null,
   };
+  if (path === null && keychainApplies(options)) {
+    const keychain = readClaudeCodeKeychain(options);
+    if (keychain.ok) {
+      described.ok = true;
+      described.path = `macOS Keychain (${KEYCHAIN_SERVICE})`;
+      described.error = null;
+      described.hasAccessToken = text(keychain.oauth.accessToken) !== null;
+      described.hasRefreshToken = text(keychain.oauth.refreshToken) !== null;
+      described.plan = text(keychain.oauth.subscriptionType);
+      const expiresAtMs = epochMs(keychain.oauth.expiresAt);
+      described.expiresInMin = expiresAtMs === null ? null : Math.round((expiresAtMs - Date.now()) / 60000);
+      if (!described.hasAccessToken) {
+        described.ok = false;
+        described.error = `no Claude Code access token in the macOS Keychain item "${KEYCHAIN_SERVICE}"`;
+      }
+    } else {
+      described.error = keychain.error;
+    }
+    return described;
+  }
   if (path === null) return described;
 
   const read = readClaudeCodeCredentialFile(path);

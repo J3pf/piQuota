@@ -81,7 +81,7 @@ There are two ways to be signed in to Claude, and a user may have either or both
 
 | Source | Store | Why it exists |
 | --- | --- | --- |
-| Claude Code CLI | `~/.claude/.credentials.json` (honours `CLAUDE_CONFIG_DIR`) | What `npm:pi-claude-code-provider` drives. A subscription with usage credits disabled answers `400` on Pi's own entry for every request, and this is the source that still works. |
+| Claude Code CLI | `~/.claude/.credentials.json` (honours `CLAUDE_CONFIG_DIR`); on macOS, when that file is absent, the `Claude Code-credentials` login Keychain item (read-only, via `security find-generic-password`; macOS may ask once to allow access) | What `npm:pi-claude-code-provider` drives. A subscription with usage credits disabled answers `400` on Pi's own entry for every request, and this is the source that still works. |
 | Pi's own entry | `~/.pi/agent/auth.json` → `anthropic` | `/login anthropic` in Pi, without the plugin installed. |
 
 **The Claude Code CLI wins when both are present.** The choice is a *preference, not
@@ -461,7 +461,7 @@ extensions/quota-panel.ts      Pi TUI line and /quota
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 242 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 247 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store

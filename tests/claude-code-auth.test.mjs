@@ -17,6 +17,7 @@ import {
   claudeCodeCandidatePaths,
   describeClaudeCodeSource,
   loadClaudeCodeCredential,
+  KEYCHAIN_SERVICE,
   OAUTH_REFRESH_LOCK_NAME,
   readClaudeCodeProfile,
   recoverStaleClaudeLock,
@@ -248,3 +249,60 @@ test("a recent .oauth_refresh.lock (< staleMs) is not removed", () => {
   assert.equal(existsSync(lockDir), true, "a fresh lock must be preserved");
 });
 
+
+// --- macOS Keychain source -------------------------------------------------
+
+const keychainBlob = (oauth = {}) =>
+  JSON.stringify({
+    claudeAiOauth: {
+      accessToken: FAKE_ACCESS,
+      refreshToken: FAKE_REFRESH,
+      expiresAt: EXPIRES_AT_MS,
+      subscriptionType: "pro",
+      rateLimitTier: "default_claude_ai",
+      ...oauth,
+    },
+  });
+
+test("keychain: darwin with no credentials file falls back to the Keychain item", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-claude-keychain-"));
+  const loaded = loadClaudeCodeCredential({ home, env: {}, platform: "darwin", keychainReader: () => keychainBlob() });
+  assert.equal(loaded.ok, true);
+  assert.equal(loaded.credential.access, FAKE_ACCESS);
+  assert.equal(loaded.credential.planType, "pro");
+  assert.equal(loaded.credential.source, `macOS Keychain (${KEYCHAIN_SERVICE})`);
+  assert.equal(JSON.stringify(loaded).includes(FAKE_REFRESH), false, "refresh token must not be carried");
+});
+
+test("keychain: a credentials file still wins over the Keychain", () => {
+  const { home } = makeClaudeCodeHome({ access: "from-file" });
+  const loaded = loadClaudeCodeCredential({ home, env: {}, platform: "darwin", keychainReader: () => keychainBlob() });
+  assert.equal(loaded.credential.access, "from-file");
+});
+
+test("keychain: ignored off darwin, with an explicit path, or with a relocated config dir", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-claude-keychain-"));
+  const reader = () => keychainBlob();
+  assert.equal(loadClaudeCodeCredential({ home, env: {}, platform: "linux", usersRoot: join(home, "none"), keychainReader: reader }).ok, false);
+  assert.equal(loadClaudeCodeCredential({ home, env: { CLAUDE_CONFIG_DIR: join(home, "x") }, platform: "darwin", keychainReader: reader }).ok, false);
+  assert.equal(loadClaudeCodeCredential({ home, env: {}, platform: "darwin", paths: [], keychainReader: reader }).ok, false);
+});
+
+test("keychain: unreadable or malformed items degrade into a message, never a throw", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-claude-keychain-"));
+  for (const keychainReader of [() => null, () => "not json", () => "{}", () => keychainBlob({ accessToken: "" })]) {
+    const loaded = loadClaudeCodeCredential({ home, env: {}, platform: "darwin", keychainReader });
+    assert.equal(loaded.ok, false);
+    assert.match(loaded.error, /Keychain/);
+  }
+});
+
+test("keychain: describeClaudeCodeSource reports presence only, never token values", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-claude-keychain-"));
+  const described = describeClaudeCodeSource({ home, env: {}, platform: "darwin", keychainReader: () => keychainBlob() });
+  assert.equal(described.ok, true);
+  assert.equal(described.hasAccessToken, true);
+  assert.equal(described.hasRefreshToken, true);
+  assert.equal(described.plan, "pro");
+  assert.equal(JSON.stringify(described).includes(FAKE_ACCESS), false);
+});
