@@ -37,6 +37,7 @@ const WIDGET_KEY = "quota-line";
 const RAIL_KEY = "quota";
 // Symbol shared with gentle-pi's runtime sidebar state registry.
 const SIDEBAR_STATE_KEY = Symbol.for("gentle-pi.experimental-sidebar.state");
+const SIDEBAR_CACHE_KEY = Symbol.for("gentle-pi.experimental-sidebar.cache");
 const REFRESH_MS = Number(process.env.PI_QUOTA_REFRESH_MS) || 300_000;
 const AGENT_END_DEBOUNCE_MS = 1_500;
 const EXEC_TIMEOUT_MS = 30_000;
@@ -553,7 +554,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   /** The compact box is the default surface: its own row, nothing competes for it. */
   let lineVisible = true;
   let boxVisible = true;
-  let explicitBox = true;
+  let explicitBox = false;
   /** gentle-pi owns the footer and truncates it from the end, so start off. */
   let statusVisible = false;
   let lastError: string | null = null;
@@ -653,27 +654,53 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
                 .join("|")}`
             : "loading";
         let nativeQuotaRendered = false;
+        const nativeQuotaLengths = new Map<number, number>();
+        const quotaRanges = new Map<number, { footerHeight: number; start: number; count: number }>();
         const rail = {
           digest,
           render: (w: number) => {
             nativeQuotaRendered = true;
-            return renderSidebarCard(report, activeTheme, w);
+            const lines = renderSidebarCard(report, activeTheme, w);
+            nativeQuotaLengths.set(w, lines.length);
+            return lines;
+          },
+          cardGroups: (w: number) => {
+            const count = nativeQuotaLengths.get(w) ?? 0;
+            return {
+              groups: [],
+              loose: Array.from({ length: count }, (_, index) => index),
+            };
           },
           invalidate() {},
         };
 
-        let railActive = Boolean(rawState?.active && rawState?.ownsHost?.());
+        let registeredState: any = null;
+        const invalidateSidebarCache = () => {
+          const cache = tui?.terminal?.[SIDEBAR_CACHE_KEY];
+          if (cache && typeof cache.revision === "number") {
+            cache.revision++;
+          }
+        };
 
-        if (rawState?.parts) {
-          rawState.parts.set(RAIL_KEY, rail);
+        const ensureSidebarRegistration = (targetState: any): boolean => {
+          if (!targetState?.parts) return false;
+          registeredState = targetState;
+          let changed = false;
 
-          // Runtime resilience: if gentle-pi's rail is active and has a footer part,
-          // but railMode is false (e.g. unpatched gentle-pi, freshly updated package before
-          // restart, or read-only filesystem), wrap the footer component so the quota card
-          // is seamlessly rendered right under the footer in the rail.
-          if (!railMode && rawState.parts.has("footer")) {
-            const originalFooter = rawState.parts.get("footer");
-            if (originalFooter && !(originalFooter as any).__piQuotaChained) {
+          if (targetState.parts.get(RAIL_KEY) !== rail) {
+            targetState.parts.set(RAIL_KEY, rail);
+            changed = true;
+          }
+
+          // Runtime resilience: if gentle-pi's rail has a footer part, but railMode is
+          // false (e.g. unpatched gentle-pi, freshly updated package before restart, or
+          // read-only filesystem), wrap the footer component so the quota card is
+          // seamlessly rendered right under the footer in both tinted and transparent
+          // (carded) rail surfaces.
+          if (!railMode && targetState.parts.has("footer")) {
+            const currentFooter = targetState.parts.get("footer");
+            if (currentFooter && !(currentFooter as any).__piQuotaChained) {
+              const originalFooter = currentFooter;
               const chainedFooter = {
                 ...originalFooter,
                 __piQuotaChained: true,
@@ -684,42 +711,72 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
                 },
                 render(w: number) {
                   const fl = [...(originalFooter.render(w) ?? [])];
-                  if (nativeQuotaRendered) return fl;
+                  if (nativeQuotaRendered) {
+                    quotaRanges.set(w, { footerHeight: fl.length, start: fl.length, count: 0 });
+                    return fl;
+                  }
                   const ql = renderSidebarCard(report, activeTheme, w);
-                  if (!ql || ql.length === 0) return fl;
+                  if (!ql || ql.length === 0) {
+                    quotaRanges.set(w, { footerHeight: fl.length, start: fl.length, count: 0 });
+                    return fl;
+                  }
+                  quotaRanges.set(w, { footerHeight: fl.length, start: fl.length + 1, count: ql.length });
                   return [...fl, "", ...ql];
                 },
+                cardGroups(w: number) {
+                  const base = originalFooter.cardGroups?.(w);
+                  if (!base || nativeQuotaRendered) return base;
+                  const range = quotaRanges.get(w);
+                  if (!range || range.count === 0) return base;
+                  const quotaLoose = Array.from({ length: range.count }, (_, index) => range.start + index);
+                  return {
+                    ...base,
+                    loose: [...(base.loose ?? []), ...quotaLoose],
+                  };
+                },
                 handleMouse(event: any) {
-                  return originalFooter.handleMouse?.(event);
+                  const range = event && typeof event.width === "number" ? quotaRanges.get(event.width) : undefined;
+                  if (range && typeof event.y === "number" && event.y >= range.footerHeight) {
+                    return undefined;
+                  }
+                  const forwarded =
+                    range && typeof event.height === "number"
+                      ? { ...event, height: range.footerHeight }
+                      : event;
+                  return originalFooter.handleMouse?.(forwarded);
                 },
                 invalidate() {
                   originalFooter.invalidate?.();
                 },
               };
-              rawState.parts.set("footer", chainedFooter);
-              railActive = Boolean(rawState.active && rawState.ownsHost?.());
-            } else if (originalFooter?.__piQuotaChained) {
-              railActive = Boolean(rawState.active && rawState.ownsHost?.());
+              targetState.parts.set("footer", chainedFooter);
+              changed = true;
             }
           }
-        }
 
-        const state = (railMode || railActive) ? rawState : undefined;
+          if (changed) {
+            invalidateSidebarCache();
+          }
+          return changed;
+        };
+
+        ensureSidebarRegistration(rawState);
 
         return {
           render: (w: number) => {
             const liveState = tui?.terminal?.[SIDEBAR_STATE_KEY] ?? rawState;
+            if (ensureSidebarRegistration(liveState)) {
+              tui?.requestRender?.();
+            }
             const isFullscreen = (tui as any)?.mode === "fullscreen";
             const cols = tui?.terminal?.columns ?? process.stdout.columns ?? 0;
             const isRailActive = Boolean(liveState && (liveState.active || (cols >= 140 && isFullscreen)));
             if (isRailActive) return [];
             if (!report) return [activeTheme.fg("dim", "quota …")];
-            // When gentle-pi is present and the sidebar is inactive or the terminal is narrow,
-            // compact to one row only when the box has not been selected.
-            if (((railMode && state !== undefined) || (state && !state.active)) && !explicitBox) {
-              return [renderLine(report, activeTheme)];
-            }
-            if (w < 100 && !explicitBox) {
+            // When gentle-pi is present and the sidebar is inactive (narrow screen / breakpoint < 140),
+            // or when the terminal is narrow (< 100), collapse to a single line like gentle-pi's other
+            // components do, unless the user explicitly requested the box with `/quota box`.
+            if ((liveState !== undefined || w < 100) && !explicitBox) {
               return [renderLine(report, activeTheme)];
             }
             if (boxVisible) return renderBox(report, activeTheme, w);
@@ -727,11 +784,13 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
             return [];
           },
           dispose: () => {
-            if (rawState?.parts?.get(RAIL_KEY) === rail) rawState.parts.delete(RAIL_KEY);
-            const currentFooter = rawState?.parts?.get("footer");
+            const targetState = tui?.terminal?.[SIDEBAR_STATE_KEY] ?? registeredState ?? rawState;
+            if (targetState?.parts?.get(RAIL_KEY) === rail) targetState.parts.delete(RAIL_KEY);
+            const currentFooter = targetState?.parts?.get("footer");
             if (currentFooter?.__piQuotaChained && currentFooter.__piQuotaOriginal) {
-              rawState.parts.set("footer", currentFooter.__piQuotaOriginal);
+              targetState.parts.set("footer", currentFooter.__piQuotaOriginal);
             }
+            invalidateSidebarCache();
           },
         };
       },

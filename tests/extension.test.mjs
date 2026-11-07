@@ -222,7 +222,7 @@ test("the boxed widget is the default surface and the footer is left alone", asy
   assert.equal(harness.statuses.at(-1), undefined, "the footer must stay untouched by default");
 });
 
-test("the boxed widget remains when sidebar symbols are present but inactive", async () => {
+test("the widget collapses to a single line when sidebar symbols are present and inactive", async () => {
   const module = await import(EXTENSION);
   const harness = makeHarness();
   module.default(harness.pi);
@@ -235,7 +235,8 @@ test("the boxed widget remains when sidebar symbols are present but inactive", a
     },
   };
   const lines = renderWidget(harness.widgets.at(-1), harness.ctx.ui.theme, 100, tui);
-  assert.match(plain(lines.join("\n")), /Claude:\s+○\s+4%/);
+  assert.equal(lines.length, 1, "inactive gentle-pi sidebar collapses to a single compact line");
+  assert.match(plain(lines[0]), /Claude:○\s+4%/);
 });
 
 test("a patched active rail registers quota natively and suppresses the above-editor widget", async () => {
@@ -285,7 +286,7 @@ test("todo rail mounting suppresses the above-editor widget without ownsHost", a
   });
 });
 
-test("an inactive patched rail keeps the default box and allows opting into the compact line", async () => {
+test("an inactive rail collapses to the compact line by default and allows opting into the box", async () => {
   await withRailFixtures(async () => {
     const module = await import(EXTENSION);
     const harness = makeHarness();
@@ -295,13 +296,14 @@ test("an inactive patched rail keeps the default box and allows opting into the 
     const state = { active: false, ownsHost: () => true, parts: new Map() };
     const tui = { terminal: { [SIDEBAR_STATE]: state } };
     const defaultLines = renderWidget(harness.widgets.at(-1), harness.ctx.ui.theme, 100, tui);
-    assert.equal(defaultLines.length, 7, "the box remains the default when the rail is inactive");
+    assert.equal(defaultLines.length, 1, "the compact line is used when the rail is inactive");
+    assert.match(plain(defaultLines[0]), /Claude:○\s+4%/);
 
     const quota = harness.commands.find((command) => command.name === "quota");
-    await quota.definition.handler("line", harness.ctx);
+    await quota.definition.handler("box", harness.ctx);
     const lines = renderWidget(harness.widgets.at(-1), harness.ctx.ui.theme, 100, tui);
-    assert.equal(lines.length, 1, "explicit /quota line opts into the compact surface");
-    assert.match(plain(lines[0]), /Claude:○\s+4%/);
+    assert.equal(lines.length, 7, "explicit /quota box opts into the 5-row box surface");
+    assert.match(plain(lines.join("\n")), /Claude:\s+○\s+4%/);
   }, { patched: true });
 });
 
@@ -315,10 +317,17 @@ test("an unpatched active rail uses the runtime hook without changing gentle-pi 
 
     const originalFooter = {
       digest: () => "footer",
-      render: (width) => [`footer ${width}`],
+      render: (width) => [`▾ INTEGRATIONS  1`, `  piquota ${width}`],
+      cardGroups: () => ({ groups: [{ start: 0, end: 2 }], loose: [] }),
     };
+    const cache = { revision: 0 };
     const state = { active: true, ownsHost: () => true, parts: new Map([["footer", originalFooter]]) };
-    const tui = { terminal: { [SIDEBAR_STATE]: state } };
+    const tui = {
+      terminal: {
+        [SIDEBAR_STATE]: state,
+        [Symbol.for("gentle-pi.experimental-sidebar.cache")]: cache,
+      },
+    };
     const widget = harness.widgets.at(-1)(tui, harness.ctx.ui.theme);
 
     assert.deepEqual(widget.render(100), [], "the active rail owns the quota surface");
@@ -330,12 +339,28 @@ test("an unpatched active rail uses the runtime hook without changing gentle-pi 
     assert.notEqual(chainedFooter, originalFooter);
     assert.ok(state.parts.has("quota"), "the runtime quota part remains registered");
     const railLines = chainedFooter.render(40);
-    assert.equal(railLines[0], "footer 40");
+    assert.equal(railLines[0], "▾ INTEGRATIONS  1");
     assert.match(plain(railLines.join("\n")), /Quota/);
     assert.match(plain(railLines.join("\n")), /Claude:/);
+    const groups = chainedFooter.cardGroups(40);
+    assert.deepEqual(groups.groups, [{ start: 0, end: 2 }], "original footer card groups stay intact");
+    assert.equal(groups.loose.length, 7, "carded rail surface receives all 7 quota box rows via loose indices");
+    assert.match(plain(railLines[groups.loose[0]]), /╭─ Quota/);
+
+    // Simulate gentle-shell re-mounting the footer after setWidget ran.
+    const replacementFooter = {
+      digest: () => "footer-2",
+      render: (width) => [`footer-2 ${width}`],
+      cardGroups: () => ({ groups: [{ start: 0, end: 1 }], loose: [] }),
+    };
+    state.parts.set("footer", replacementFooter);
+    const prevRevision = cache.revision;
+    widget.render(100);
+    assert.notEqual(state.parts.get("footer"), replacementFooter, "render() re-chains a replaced footer");
+    assert.ok(cache.revision > prevRevision, "re-chaining invalidates the sidebar cache");
 
     widget.dispose();
-    assert.equal(state.parts.get("footer"), originalFooter, "disposal restores the original footer component");
+    assert.equal(state.parts.get("footer"), replacementFooter, "disposal restores the latest original footer component");
     assert.equal(state.parts.has("quota"), false, "disposal removes the quota rail part");
   });
 });
