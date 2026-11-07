@@ -276,6 +276,18 @@ test("the box widget borders and content align to the exact same visible width",
   for (let i = 1; i < lengths.length; i++) {
     assert.equal(lengths[i], lengths[0], `line ${i} width matches top border width`);
   }
+
+  const weeklyBottleneck = renderBoxWidget([
+    providerFixture({
+      family: "codex",
+      label: "Codex (Pi)",
+      windows: [
+        windowFixture({ id: "5h", label: "5h window", usedPercent: 12, remainingPercent: 88, resetsInSec: 3600 }),
+        windowFixture({ id: "weekly", label: "Weekly window", usedPercent: 78, remainingPercent: 22, resetsInSec: 2 * 86400 + 5 * 3600 }),
+      ],
+    }),
+  ], plainPaint, 0).join("\n");
+  assert.match(weeklyBottleneck, /Codex:\s+◔\s+78%\s+7d\s+R:2d 5h/, "promotes 7d window with explicit 7d tag when weekly usage >= 60% and exceeds 5h");
 });
 
 test("model defensive parsing: booleans, arrays, reset seconds, and phantom quota guards", () => {

@@ -246,34 +246,69 @@ function renderWindow(window, paint, contentWidth) {
  * @returns {string[]}
  */
 export function renderBoxWidget(providers, paint, totalWidth = typeof process?.stdout?.columns === "number" ? process.stdout.columns : 80) {
+  const WEEKLY_ALERT_PERCENT = 60;
   const isFiveHour = (window) =>
     window?.id === "5h" || /5h|session|hour/i.test(`${window?.id ?? ""} ${window?.label ?? ""}`) ||
     (typeof window?.windowSeconds === "number" && window.windowSeconds <= 6 * 3600);
+  const isWeekly = (window) =>
+    window?.id === "weekly" || /week|7d|7-day|seven/i.test(`${window?.id ?? ""} ${window?.label ?? ""}`) ||
+    (typeof window?.windowSeconds === "number" && window.windowSeconds >= 5 * 86_400 && window.windowSeconds <= 8 * 86_400);
   const providerFor = (family) => providers.find((provider) => provider.family === family);
-  const windowFor = (family, match = isFiveHour) => {
-    const provider = providerFor(family);
-    return { provider, window: provider?.windows?.find(match) ?? null };
-  };
   const usedOf = (win) => {
     if (!win) return null;
     if (typeof win.usedPercent === "number" && Number.isFinite(win.usedPercent)) return win.usedPercent;
     if (typeof win.remainingPercent === "number" && Number.isFinite(win.remainingPercent)) return 100 - win.remainingPercent;
     return null;
   };
+  const windowFor = (family, matchFiveHour = isFiveHour, matchWeekly = isWeekly) => {
+    const provider = providerFor(family);
+    const fiveHour = provider?.windows?.find(matchFiveHour) ?? null;
+    const weekly = provider?.windows?.find(matchWeekly) ?? null;
+    const fiveUsed = usedOf(fiveHour);
+    const weeklyUsed = usedOf(weekly);
+    if (
+      weekly &&
+      weeklyUsed !== null &&
+      (fiveHour === null || (weeklyUsed >= WEEKLY_ALERT_PERCENT && (fiveUsed === null || weeklyUsed > fiveUsed)))
+    ) {
+      return { provider, window: weekly, windowTag: "7d" };
+    }
+    return { provider, window: fiveHour, windowTag: null };
+  };
   const allRows = [
     { label: "Claude: ", ...windowFor("claude") },
     { label: "Codex:  ", ...windowFor("codex") },
-    { label: "Agy:    ", ...windowFor("antigravity", (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window))) },
-    { label: "Agy C/G:", ...windowFor("antigravity", (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))) },
+    {
+      label: "Agy:    ",
+      ...windowFor(
+        "antigravity",
+        (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window)),
+        (window) => window.id === "gemini-weekly" || (/gemini/i.test(window.id) && isWeekly(window)),
+      ),
+    },
+    {
+      label: "Agy C/G:",
+      ...windowFor(
+        "antigravity",
+        (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window)),
+        (window) => window.id === "claude-gpt-weekly" || (/(claude|gpt|3p)/i.test(window.id) && isWeekly(window)),
+      ),
+    },
     { label: "OP-Go:  ", ...windowFor("opencode-go") },
   ];
-  if (providerFor("github-actions")) {
-    allRows.push({ label: "GH Actions:", ...windowFor("github-actions", (window) => window.id === "monthly") });
+  const ghProvider = providerFor("github-actions");
+  if (ghProvider) {
+    allRows.push({
+      label: "GH Actions:",
+      provider: ghProvider,
+      window: ghProvider.windows?.find((window) => window.id === "monthly") ?? null,
+      windowTag: null,
+    });
   }
   const configuredRows = allRows.filter(({ provider }) => Boolean(provider && provider.notConfigured !== true));
   const rows = configuredRows.length > 0 ? configuredRows : allRows;
 
-  const content = rows.map(({ label, provider, window }) => {
+  const content = rows.map(({ label, provider, window, windowTag }) => {
     const name = paint("bold", label);
     if (!provider || !provider.ok) {
       const error = provider ? errorCaption(provider.error) : "not configured";
@@ -284,7 +319,8 @@ export function renderBoxWidget(providers, paint, totalWidth = typeof process?.s
     if (used !== null) {
       const rem = Math.max(0, 100 - used);
       const key = thresholdKey(rem);
-      mid = `${paint(key, ringGlyph(rem))} ${paint(key, `${Math.round(used)}%`.padStart(4))}`;
+      const tag = windowTag ? ` ${paint("dim", windowTag)}` : "";
+      mid = `${paint(key, ringGlyph(rem))} ${paint(key, `${Math.round(used)}%`.padStart(4))}${tag}`;
     }
     const effectiveResetsInSec =
       window?.resetsInSec ??

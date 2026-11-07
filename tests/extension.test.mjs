@@ -304,6 +304,29 @@ test("an inactive rail collapses to the compact line by default and allows optin
     const lines = renderWidget(harness.widgets.at(-1), harness.ctx.ui.theme, 100, tui);
     assert.equal(lines.length, 7, "explicit /quota box opts into the 5-row box surface");
     assert.match(plain(lines.join("\n")), /Claude:\s+○\s+4%/);
+
+    const boxBottleneck = module.renderBox(
+      {
+        generatedAt: "2030-01-01T00:00:00.000Z",
+        providers: [
+          {
+            family: "codex",
+            label: "Codex (Pi)",
+            account: "fixture@example.com",
+            plan: "plus",
+            ok: true,
+            error: null,
+            windows: [
+              { id: "5h", label: "5h window", usedPercent: 10, remainingPercent: 90, resetsAt: null, resetsInSec: 3600 },
+              { id: "weekly", label: "Weekly window", usedPercent: 82, remainingPercent: 18, resetsAt: null, resetsInSec: 2 * 86400 + 3600 },
+            ],
+          },
+        ],
+      },
+      harness.ctx.ui.theme,
+      80,
+    );
+    assert.match(plain(boxBottleneck.join("\n")), /Codex:\s+●\s+82%\s+7d\s+R:2d 1h/, "renderBox promotes 7d window with 7d tag when weekly usage >= 60%");
   }, { patched: true });
 });
 

@@ -305,7 +305,13 @@ function renderLine(report: QuotaReport, theme: Theme): string {
   const active = report.providers.filter((provider) => provider.notConfigured !== true);
   if (active.length === 0) return theme.fg("dim", "quota: no providers configured in Pi");
 
-  const renderToken = (provider: QuotaProvider, label: string, window: QuotaWindow | null, color = BRAND[provider.family] ?? "#8B949E"): string => {
+  const renderToken = (
+    provider: QuotaProvider,
+    label: string,
+    window: QuotaWindow | null,
+    color = BRAND[provider.family] ?? "#8B949E",
+    windowTag: "7d" | null = null,
+  ): string => {
     const name = paint(color, `${label}:`);
     if (!provider.ok) {
       const kind = errorKind(provider.error);
@@ -318,15 +324,38 @@ function renderLine(report: QuotaReport, theme: Theme): string {
     if (used === null) return `${name}${theme.fg("dim", "?")}`;
 
     const band = bandFor(used);
-    return `${name}${paint(band.color, band.glyph)} ${paint(band.color, `${Math.round(used)}%`)}`;
+    const tag = windowTag ? ` ${theme.fg("dim", `(${windowTag})`)}` : "";
+    return `${name}${paint(band.color, band.glyph)} ${paint(band.color, `${Math.round(used)}%`)}${tag}`;
   };
   const tokens = active.flatMap((provider) => {
     if (provider.family !== "antigravity") {
-      return [renderToken(provider, SHORT_NAME[provider.family] ?? provider.family, headline(provider))];
+      if (provider.family === "github-actions") {
+        return [renderToken(provider, SHORT_NAME[provider.family] ?? provider.family, headline(provider))];
+      }
+      const picked = selectActiveWindow(provider);
+      return [
+        renderToken(
+          provider,
+          SHORT_NAME[provider.family] ?? provider.family,
+          picked.window ?? headline(provider),
+          BRAND[provider.family] ?? "#8B949E",
+          picked.window ? picked.windowTag : null,
+        ),
+      ];
     }
+    const agy = selectActiveWindow(
+      provider,
+      (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window)),
+      (window) => window.id === "gemini-weekly" || (/gemini/i.test(window.id) && isWeekly(window)),
+    );
+    const agyCg = selectActiveWindow(
+      provider,
+      (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window)),
+      (window) => window.id === "claude-gpt-weekly" || (/(claude|gpt|3p)/i.test(window.id) && isWeekly(window)),
+    );
     return [
-      renderToken(provider, "Agy", provider.windows.find((window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window)))),
-      renderToken(provider, "Agy C/G", provider.windows.find((window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))), "#7AA2F7"),
+      renderToken(provider, "Agy", agy.window, BRAND.antigravity, agy.windowTag),
+      renderToken(provider, "Agy C/G", agyCg.window, "#7AA2F7", agyCg.windowTag),
     ];
   });
   return tokens.join("  ");
@@ -359,6 +388,8 @@ function clipVisible(text: string, width: number): string {
   return `${out}\u2026\u001b[0m`;
 }
 
+const WEEKLY_ALERT_PERCENT = 60;
+
 function isFiveHour(window: QuotaWindow): boolean {
   return (
     window.id === "5h" ||
@@ -367,26 +398,85 @@ function isFiveHour(window: QuotaWindow): boolean {
   );
 }
 
+function isWeekly(window: QuotaWindow): boolean {
+  return (
+    window.id === "weekly" ||
+    /week|7d|7-day|seven/i.test(`${window.id} ${window.label}`) ||
+    (typeof window.windowSeconds === "number" && window.windowSeconds >= 5 * 86_400 && window.windowSeconds <= 8 * 86_400)
+  );
+}
+
+/**
+ * Pick the active quota window for a compact row/token.
+ *
+ * Defaults to the 5h window because that reflects immediate burst capacity,
+ * but promotes the 7d (weekly) window with an explicit `"7d"` tag whenever the
+ * 7d window reaches the warning threshold (>= 60% used) and is more restrictive
+ * than the 5h window, or when only a 7d window exists.
+ */
+function selectActiveWindow(
+  provider: QuotaProvider | undefined,
+  matchFiveHour: (window: QuotaWindow) => boolean = isFiveHour,
+  matchWeekly: (window: QuotaWindow) => boolean = isWeekly,
+): { provider: QuotaProvider | undefined; window: QuotaWindow | null; windowTag: "7d" | null } {
+  const fiveHour = provider?.windows.find(matchFiveHour) ?? null;
+  const weekly = provider?.windows.find(matchWeekly) ?? null;
+  const fiveUsed = usedOf(fiveHour);
+  const weeklyUsed = usedOf(weekly);
+  if (
+    weekly &&
+    weeklyUsed !== null &&
+    (fiveHour === null || (weeklyUsed >= WEEKLY_ALERT_PERCENT && (fiveUsed === null || weeklyUsed > fiveUsed)))
+  ) {
+    return { provider, window: weekly, windowTag: "7d" };
+  }
+  return { provider, window: fiveHour, windowTag: null };
+}
+
 /** Compact five-row quota widget aligned to the right edge of the editor. */
 export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number): string[] {
   const providerFor = (family: string): QuotaProvider | undefined => report.providers.find((provider) => provider.family === family);
-  const windowFor = (family: string, matches: (window: QuotaWindow) => boolean) => {
-    const provider = providerFor(family);
-    return { provider, window: provider?.windows.find(matches) ?? null };
-  };
+  const windowFor = (
+    family: string,
+    matchFiveHour: (window: QuotaWindow) => boolean = isFiveHour,
+    matchWeekly: (window: QuotaWindow) => boolean = isWeekly,
+  ) => selectActiveWindow(providerFor(family), matchFiveHour, matchWeekly);
   const allRows = [
-    { label: "Claude: ", color: "#D97757", ...windowFor("claude", isFiveHour) },
-    { label: "Codex:  ", color: "#10A37F", ...windowFor("codex", isFiveHour) },
-    { label: "Agy:    ", color: "#4285F4", ...windowFor("antigravity", (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window))) },
-    { label: "Agy C/G:", color: "#7AA2F7", ...windowFor("antigravity", (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))) },
-    { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go", isFiveHour) },
+    { label: "Claude: ", color: "#D97757", ...windowFor("claude") },
+    { label: "Codex:  ", color: "#10A37F", ...windowFor("codex") },
+    {
+      label: "Agy:    ",
+      color: "#4285F4",
+      ...windowFor(
+        "antigravity",
+        (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window)),
+        (window) => window.id === "gemini-weekly" || (/gemini/i.test(window.id) && isWeekly(window)),
+      ),
+    },
+    {
+      label: "Agy C/G:",
+      color: "#7AA2F7",
+      ...windowFor(
+        "antigravity",
+        (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window)),
+        (window) => window.id === "claude-gpt-weekly" || (/(claude|gpt|3p)/i.test(window.id) && isWeekly(window)),
+      ),
+    },
+    { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go") },
   ];
-  if (providerFor("github-actions")) {
-    allRows.push({ label: "GH Actions:", color: "#2088FF", ...windowFor("github-actions", (window) => window.id === "monthly") });
+  const ghProvider = providerFor("github-actions");
+  if (ghProvider) {
+    allRows.push({
+      label: "GH Actions:",
+      color: "#2088FF",
+      provider: ghProvider,
+      window: ghProvider.windows.find((window) => window.id === "monthly") ?? null,
+      windowTag: null,
+    });
   }
   const configuredRows = allRows.filter(({ provider }) => Boolean(provider && provider.notConfigured !== true));
   const rows = configuredRows.length > 0 ? configuredRows : allRows;
-  const content = rows.map(({ label, color, provider, window }) => {
+  const content = rows.map(({ label, color, provider, window, windowTag }) => {
     const name = paint(color, label);
     const showingLastKnownValues = Boolean(provider?.note && /last known values/i.test(provider.note));
     if (!provider || (!provider.ok && !showingLastKnownValues)) {
@@ -396,7 +486,8 @@ export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number
     let mid = theme.fg("dim", "? n/a");
     if (used !== null) {
       const band = bandFor(used);
-      mid = paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`);
+      const tag = windowTag ? ` ${theme.fg("dim", windowTag)}` : "";
+      mid = `${paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`)}${tag}`;
     }
     const effectiveResetsInSec =
       window?.resetsInSec ??
@@ -427,26 +518,52 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
   const cardWidth = Math.max(4, width);
   const innerWidth = cardWidth - 4;
   const providerFor = (family: string): QuotaProvider | undefined => report?.providers.find((provider) => provider.family === family);
-  const windowFor = (family: string, matches: (window: QuotaWindow) => boolean) => {
-    const provider = providerFor(family);
-    return { provider, window: provider?.windows.find(matches) ?? null };
-  };
+  const windowFor = (
+    family: string,
+    matchFiveHour: (window: QuotaWindow) => boolean = isFiveHour,
+    matchWeekly: (window: QuotaWindow) => boolean = isWeekly,
+  ) => selectActiveWindow(providerFor(family), matchFiveHour, matchWeekly);
+  const ghProvider = providerFor("github-actions");
   const allRows = report
     ? [
-        { label: "Claude: ", color: "#D97757", ...windowFor("claude", isFiveHour) },
-        { label: "Codex:  ", color: "#10A37F", ...windowFor("codex", isFiveHour) },
-        { label: "Agy:    ", color: "#4285F4", ...windowFor("antigravity", (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window))) },
-        { label: "Agy C/G:", color: "#7AA2F7", ...windowFor("antigravity", (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window))) },
-        { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go", isFiveHour) },
-        ...(providerFor("github-actions")
-          ? [{ label: "GH Actions:", color: "#2088FF", ...windowFor("github-actions", (window) => window.id === "monthly") }]
+        { label: "Claude: ", color: "#D97757", ...windowFor("claude") },
+        { label: "Codex:  ", color: "#10A37F", ...windowFor("codex") },
+        {
+          label: "Agy:    ",
+          color: "#4285F4",
+          ...windowFor(
+            "antigravity",
+            (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window)),
+            (window) => window.id === "gemini-weekly" || (/gemini/i.test(window.id) && isWeekly(window)),
+          ),
+        },
+        {
+          label: "Agy C/G:",
+          color: "#7AA2F7",
+          ...windowFor(
+            "antigravity",
+            (window) => window.id === "claude-gpt-5h" || (/(claude|gpt|3p)/i.test(window.id) && isFiveHour(window)),
+            (window) => window.id === "claude-gpt-weekly" || (/(claude|gpt|3p)/i.test(window.id) && isWeekly(window)),
+          ),
+        },
+        { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go") },
+        ...(ghProvider
+          ? [
+              {
+                label: "GH Actions:",
+                color: "#2088FF",
+                provider: ghProvider,
+                window: ghProvider.windows.find((window) => window.id === "monthly") ?? null,
+                windowTag: null as "7d" | null,
+              },
+            ]
           : []),
       ]
     : [];
   const configuredRows = allRows.filter(({ provider }) => Boolean(provider && provider.notConfigured !== true));
   const rows = configuredRows.length > 0 ? configuredRows : allRows;
   const content = rows.length > 0
-    ? rows.map(({ label, color, provider, window }) => {
+    ? rows.map(({ label, color, provider, window, windowTag }) => {
         const name = paint(color, label);
         const showingLastKnownValues = Boolean(provider?.note && /last known values/i.test(provider.note));
         if (!provider || (!provider.ok && !showingLastKnownValues)) {
@@ -456,13 +573,14 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
         if (used === null) return { left: `${name} ? n/a`, right: "" };
         const band = bandFor(used);
         const indicator = showingLastKnownValues ? `${theme.fg("warning", "~")} ` : "";
+        const tag = windowTag ? ` ${theme.fg("dim", windowTag)}` : "";
         const effectiveResetsInSec =
           window?.resetsInSec ??
           (used === 0 && typeof window?.windowSeconds === "number" && window.windowSeconds > 0
             ? window.windowSeconds
             : null);
         return {
-          left: `${name} ${indicator}${paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`)}`,
+          left: `${name} ${indicator}${paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`)}${tag}`,
           right: `${theme.fg("dim", "R:")}${paint("#E0AF68", humanDuration(effectiveResetsInSec))}`,
         };
       })
