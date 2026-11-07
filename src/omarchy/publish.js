@@ -7,9 +7,9 @@
  * Omarchy's own `claude.json` / `codex.json` records are never touched.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isPiRecordId, RECORD_PREFIX } from "./record.js";
@@ -46,7 +46,7 @@ function writeRecord(dir, id, record) {
   }
   // The temp name does not end in `.json`, so Omarchy's `*.json` watcher never
   // sees a half-written file.
-  const temp = join(dir, `.${id}.${process.pid}.tmp`);
+  const temp = join(dir, `.${id}.${process.pid}.${Date.now()}.tmp`);
   try {
     writeFileSync(temp, content, { mode: 0o644 });
     renameSync(temp, target);
@@ -67,15 +67,20 @@ function writeRecord(dir, id, record) {
  * @returns {boolean} Whether the file was written.
  */
 function copyIfChanged(srcPath, dstPath) {
+  const tempPath = join(dirname(dstPath), `.${basename(dstPath)}.${process.pid}.${Date.now()}.tmp`);
   try {
+    const srcBuf = readFileSync(srcPath);
     if (existsSync(dstPath)) {
-      const srcBuf = readFileSync(srcPath);
       const dstBuf = readFileSync(dstPath);
       if (srcBuf.equals(dstBuf)) return false;
     }
-    copyFileSync(srcPath, dstPath);
+    writeFileSync(tempPath, srcBuf, { mode: 0o644 });
+    renameSync(tempPath, dstPath);
     return true;
   } catch {
+    try {
+      rmSync(tempPath, { force: true });
+    } catch {}
     return false;
   }
 }

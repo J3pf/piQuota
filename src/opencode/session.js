@@ -10,13 +10,13 @@
  *   3. a local browser's cookie store, read read-only (see src/browser/cookies.js).
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { discoverCookieStores, findCookie } from "../browser/cookies.js";
 import { findRecentWorkspaceIds } from "../browser/history.js";
-import { requestJson } from "../http.js";
+import { redact, requestJson } from "../http.js";
 import { parseGoDashboard, parseGoMeters, findWorkspaceIds } from "./dashboard.js";
 
 export const OPENCODE_ORIGIN = "https://opencode.ai";
@@ -59,9 +59,9 @@ function readTrimmed(path) {
  * @returns {{ ok: boolean, error?: string }}
  */
 export function writeSecretFile(path, value) {
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(temporary, value.trim() + "\n", { encoding: "utf-8", mode: 0o600 });
     try {
       chmodSync(temporary, 0o600);
@@ -71,6 +71,11 @@ export function writeSecretFile(path, value) {
     renameSync(temporary, path);
     return { ok: true };
   } catch (error) {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      // Best-effort cleanup of failed temp write.
+    }
     return { ok: false, error: /** @type {{ message?: string }} */ (error)?.message ?? String(error) };
   }
 }
@@ -179,7 +184,7 @@ export function resolveWorkspaceIdFromConfig(options = {}) {
  * Fetch a page with the session cookie.
  *
  * @param {string} url
- * @param {{ cookie: string, fetchFn?: typeof fetch, timeoutMs?: number }} options
+ * @param {{ cookie: string, cookieName?: string, fetchFn?: typeof fetch, timeoutMs?: number }} options
  * @returns {Promise<{ ok: boolean, status: number, html: string, redirected: boolean, error?: string }>}
  */
 async function fetchPage(url, options) {
@@ -191,7 +196,7 @@ async function fetchPage(url, options) {
       method: "GET",
       redirect: "manual",
       headers: {
-        Cookie: `${OPENCODE_COOKIE_NAME}=${options.cookie}`,
+        Cookie: toCookieHeader(options.cookie, options.cookieName),
         Accept: "text/html,application/xhtml+xml",
         "User-Agent": USER_AGENT,
       },
@@ -205,7 +210,7 @@ async function fetchPage(url, options) {
         status: response.status,
         html: "",
         redirected: true,
-        error: location ? `redirected to ${location.replace(/\?.*$/, "")}` : `HTTP ${response.status}`,
+        error: location ? `redirected to ${redact(location.replace(/[?#].*$/, ""))}` : `HTTP ${response.status}`,
       };
     }
     if (!response.ok) {
@@ -216,7 +221,7 @@ async function fetchPage(url, options) {
     const name = /** @type {{ name?: string }} */ (error)?.name;
     const message = /** @type {{ message?: string, cause?: { code?: string } }} */ (error)?.message ?? String(error);
     const code = /** @type {{ cause?: { code?: string } }} */ (error)?.cause?.code;
-    const detail = code ? `${message} (${code})` : message;
+    const detail = redact(code ? `${message} (${code})` : message);
     return {
       ok: false,
       status: 0,
@@ -313,7 +318,12 @@ export function toCookieHeader(cookie, cookieName) {
  */
 export async function fetchGoStatusApi(options = {}) {
   const cookie = options.cookie !== undefined
-    ? { found: Boolean(options.cookie), value: options.cookie, origin: "provided", name: options.cookieName }
+    ? {
+        found: Boolean(options.cookie),
+        value: options.cookie,
+        origin: options.cookieOrigin ?? "provided",
+        name: options.cookieName,
+      }
     : resolveCookie(options);
   if (!cookie.found || !cookie.value) {
     return {
@@ -408,12 +418,17 @@ export async function fetchGoStatusApi(options = {}) {
  * }>}
  */
 export async function readGoPlan(options = {}) {
-  const apiResult = await fetchGoStatusApi(options);
-  if (apiResult.ok) return apiResult;
-
   const now = options.now ?? Date.now();
   const cookie = options.cookie !== undefined
-    ? { found: Boolean(options.cookie), value: options.cookie, origin: "provided", detail: "provided", encryptedOnly: false, storeCount: 0 }
+    ? {
+        found: Boolean(options.cookie),
+        value: options.cookie,
+        origin: options.cookieOrigin ?? "provided",
+        detail: options.cookieDetail ?? "provided",
+        encryptedOnly: false,
+        storeCount: 0,
+        name: options.cookieName,
+      }
     : resolveCookie(options);
   if (!cookie.found || !cookie.value) {
     return {
@@ -427,9 +442,17 @@ export async function readGoPlan(options = {}) {
     };
   }
 
+  const apiResult = await fetchGoStatusApi({
+    ...options,
+    cookie: cookie.value,
+    cookieName: cookie.name,
+    cookieOrigin: String(cookie.origin),
+  });
+  if (apiResult.ok) return apiResult;
+
   const workspace = options.workspaceId
     ? { workspaceId: options.workspaceId }
-    : await discoverWorkspaceId({ ...options, cookie: cookie.value });
+    : await discoverWorkspaceId({ ...options, cookie: cookie.value, cookieName: cookie.name });
   if (!workspace.workspaceId) {
     return {
       ok: false,
@@ -443,7 +466,7 @@ export async function readGoPlan(options = {}) {
   }
 
   const url = `${OPENCODE_ORIGIN}/workspace/${encodeURIComponent(workspace.workspaceId)}/go`;
-  const page = await fetchPage(url, { ...options, cookie: cookie.value });
+  const page = await fetchPage(url, { ...options, cookie: cookie.value, cookieName: cookie.name });
   if (!page.ok) {
     return {
       ok: false,

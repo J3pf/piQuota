@@ -306,3 +306,25 @@ test("keychain: describeClaudeCodeSource reports presence only, never token valu
   assert.equal(described.plan, "pro");
   assert.equal(JSON.stringify(described).includes(FAKE_ACCESS), false);
 });
+
+test("keychain: hex-encoded output from security find-generic-password -w is decoded and parsed", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-claude-keychain-hex-"));
+  const hexPayload = Buffer.from(keychainBlob({ expiresAt: Math.floor(EXPIRES_AT_MS / 1000) }), "utf-8").toString("hex");
+  const loaded = loadClaudeCodeCredential({ home, env: {}, platform: "darwin", keychainReader: () => hexPayload });
+  assert.equal(loaded.ok, true);
+  assert.equal(loaded.credential.access, FAKE_ACCESS);
+  assert.equal(loaded.credential.expiresAtMs, EXPIRES_AT_MS);
+});
+
+test("recoverStaleClaudeLock refuses to remove a regular file at .oauth_refresh.lock", () => {
+  const { home, usersRoot } = makeClaudeCodeHome();
+  const lockFile = join(home, ".claude", OAUTH_REFRESH_LOCK_NAME);
+  writeFileSync(lockFile, "not-a-directory", "utf-8");
+  const tenMinutesAgo = (Date.now() - 600_000) / 1000;
+  utimesSync(lockFile, tenMinutesAgo, tenMinutesAgo);
+
+  const loaded = loadClaudeCodeCredential({ home, usersRoot, env: {}, platform: "linux" });
+  assert.equal(loaded.ok, true);
+  assert.equal(loaded.recoveredLock, null);
+  assert.equal(existsSync(lockFile), true, "non-directory lock path must never be recursively deleted");
+});

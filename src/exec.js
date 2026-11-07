@@ -19,6 +19,7 @@ export const DEFAULT_TIMEOUT_MS = 15_000;
 export function runCommand(command, args = [], options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
     timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     env: options.env ?? process.env,
   });

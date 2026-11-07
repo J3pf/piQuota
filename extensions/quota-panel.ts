@@ -230,7 +230,7 @@ type ErrorKind = "transient" | "throttle" | "expired" | "auth" | "missing" | "un
 function errorKind(error: string | null | undefined): ErrorKind {
   if (!error || typeof error !== "string") return "unknown";
   if (
-    /no [a-z-]+ credential|has no (anthropic|openai-codex|antigravity|opencode-go) (access )?token|no key stored|no "auth" cookie|no opencode\.ai session/i.test(
+    /no [a-z-]+ credential|has no (anthropic|openai-codex|antigravity|opencode-go) (access )?token|no key stored|no (?:OpenCode session|"?__Host-console_session"?|"auth") cookie|no auth cookie:|no opencode\.ai session|Claude Code CLI has no readable credentials|requires the gh CLI/i.test(
       error,
     )
   ) {
@@ -243,11 +243,11 @@ function errorKind(error: string | null | undefined): ErrorKind {
   ) {
     return "expired";
   }
-  if (/HTTP 401|HTTP 403|401|403|unauthorized|forbidden|invalid_grant|token rejected/i.test(error)) {
-    return "auth";
-  }
   if (/HTTP 429|rate limited|backing off|throttle/i.test(error)) {
     return "throttle";
+  }
+  if (/\bHTTP 40[13]\b|\bstatus 40[13]\b|\b40[13]\s+(?:unauthorized|forbidden)\b|unauthorized|forbidden|invalid_grant|token rejected/i.test(error)) {
+    return "auth";
   }
   if (/HTTP 5\d\d|timed out|timeout|ECONNRESET|socket|network|fetch failed|ENOTFOUND|ETIMEDOUT|EPIPE|ECONNREFUSED|aborted|hang up/i.test(error)) {
     return "transient";
@@ -385,7 +385,8 @@ export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number
   }
   const content = rows.map(({ label, color, provider, window }) => {
     const name = paint(color, label);
-    if (!provider || !provider.ok) {
+    const showingLastKnownValues = Boolean(provider?.note && /last known values/i.test(provider.note));
+    if (!provider || (!provider.ok && !showingLastKnownValues)) {
       return { left: `${name} ${theme.fg("error", `! ${provider ? errorCaption(provider.error) : "not configured"}`)}`, right: "" };
     }
     const used = usedOf(window);
@@ -394,9 +395,14 @@ export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number
       const band = bandFor(used);
       mid = paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`);
     }
+    const effectiveResetsInSec =
+      window?.resetsInSec ??
+      (used === 0 && typeof window?.windowSeconds === "number" && window.windowSeconds > 0
+        ? window.windowSeconds
+        : null);
     return {
       left: `${name} ${mid}`,
-      right: `${theme.fg("dim", "R:")}${paint("#E0AF68", humanDuration(window?.resetsInSec ?? null))}`,
+      right: `${theme.fg("dim", "R:")}${paint("#E0AF68", humanDuration(effectiveResetsInSec))}`,
     };
   });
   const innerWidth = Math.max(25, ...content.map(({ left, right }) => visibleLength(left) + (right ? 2 + visibleLength(right) : 0)));
@@ -445,9 +451,14 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
         if (used === null) return { left: `${name} ? n/a`, right: "" };
         const band = bandFor(used);
         const indicator = showingLastKnownValues ? `${theme.fg("warning", "~")} ` : "";
+        const effectiveResetsInSec =
+          window?.resetsInSec ??
+          (used === 0 && typeof window?.windowSeconds === "number" && window.windowSeconds > 0
+            ? window.windowSeconds
+            : null);
         return {
           left: `${name} ${indicator}${paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`)}`,
-          right: `${theme.fg("dim", "R:")}${paint("#E0AF68", humanDuration(window?.resetsInSec ?? null))}`,
+          right: `${theme.fg("dim", "R:")}${paint("#E0AF68", humanDuration(effectiveResetsInSec))}`,
         };
       })
     : [{ left: theme.fg("dim", "loading quota …"), right: "" }];
@@ -492,7 +503,10 @@ function renderPanel(report: QuotaReport, theme: Theme): string[] {
       const kind = errorKind(provider.error);
       const glyph = errorGlyph(provider.error);
       const color = kind === "transient" || kind === "throttle" ? "warning" : kind === "expired" || kind === "auth" ? "error" : "dim";
-      lines.push(`  ${theme.fg(color, glyph)} ${theme.fg("warning", provider.note ?? errorCaption(provider.error))}`);
+      const headlineText = isRecoverableError(provider.error) && provider.note
+        ? errorCaption(provider.error)
+        : (provider.note ?? errorCaption(provider.error));
+      lines.push(`  ${theme.fg(color, glyph)} ${theme.fg("warning", headlineText)}`);
       if (isRecoverableError(provider.error) && provider.note) lines.push(`  ${theme.fg("warning", provider.note)}`);
       continue;
     }
@@ -725,6 +739,25 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     );
   }
 
+  function isOmarchyPresent(): boolean {
+    if (process.env.PI_QUOTA_OMARCHY_DIR) return true;
+    const home = homedir();
+    const stateBase = process.env.XDG_STATE_HOME || join(home, ".local", "state");
+    return existsSync(join(stateBase, "omarchy")) || existsSync(join(home, ".config", "omarchy"));
+  }
+
+  async function syncOmarchyInBackground(): Promise<void> {
+    if (!isOmarchyPresent()) return;
+    const cli = resolveCliPath();
+    if (!cli) return;
+    try {
+      const runner = /node(\.exe)?$/i.test(process.execPath) ? process.execPath : "node";
+      await pi.exec(runner, [cli, "omarchy"], { timeout: EXEC_TIMEOUT_MS });
+    } catch {
+      // Best-effort background sync; never clobber lastError.
+    }
+  }
+
   async function refresh(ctx: UiContext, force: boolean): Promise<void> {
     if (refreshing) return;
     refreshing = true;
@@ -734,7 +767,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
       if (next) {
         report = next;
         paintUi(ctx);
-        void runCli(["omarchy"]);
+        void syncOmarchyInBackground();
       }
     } finally {
       refreshing = false;

@@ -7,11 +7,11 @@
  * process restart resumes hammering and the card stays degraded for longer than
  * it needs to.
  *
- * A throttled family is skipped entirely until its backoff expires; the Moshi
+ * A throttled family is skipped entirely until its backoff expires; the sticky
  * layer then republishes the previous good snapshot, so the card survives.
  */
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -49,9 +49,9 @@ export function readBackoff(options = {}) {
  */
 function writeBackoff(state, options = {}) {
   const path = resolveBackoffPath(options);
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(temporary, JSON.stringify(state, null, 2), { encoding: "utf-8", mode: 0o600 });
     try {
       chmodSync(temporary, 0o600);
@@ -61,6 +61,9 @@ function writeBackoff(state, options = {}) {
     renameSync(temporary, path);
     return true;
   } catch {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {}
     return false;
   }
 }
@@ -131,7 +134,8 @@ export function isThrottled(error) {
  */
 export function isAuthFailure(error) {
   if (!error || typeof error !== "string") return false;
-  return /401|403|unauthorized|forbidden|token expired|sign-in expired|expired or rejected|re-authenticate|invalid_grant|no .*access token/i.test(error);
+  if (isThrottled(error)) return false;
+  return /\bHTTP 40[13]\b|\bstatus 40[13]\b|\b40[13]\s+(?:unauthorized|forbidden)\b|unauthorized|forbidden|token expired|sign-in expired|expired or rejected|re-authenticate|invalid_grant|token rejected|no .*access token/i.test(error);
 }
 
 /**

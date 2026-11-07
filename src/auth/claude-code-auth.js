@@ -18,11 +18,12 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { runCommand } from "../exec.js";
+import { redact } from "../http.js";
 
 /** Windows-side profiles reachable from WSL, discovered without spawning cmd.exe. */
 const WINDOWS_USERS_ROOT = "/mnt/c/Users";
@@ -46,19 +47,28 @@ function text(value) {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
+/** Any timestamp below this is in seconds (year ~5138 in s, ~1973 in ms). */
+const SECONDS_EPOCH_CEILING = 1e11;
+
 /**
  * @param {unknown} value
  * @returns {number | null}
  */
 function epochMs(value) {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "") {
+  let raw = null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    raw = value;
+  } else if (typeof value === "string" && value.trim() !== "") {
     const parsed = Number(value);
-    if (!Number.isNaN(parsed)) return parsed;
-    const fromDate = Date.parse(value);
-    if (!Number.isNaN(fromDate)) return fromDate;
+    if (!Number.isNaN(parsed) && Number.isFinite(parsed)) {
+      raw = parsed;
+    } else {
+      const fromDate = Date.parse(value);
+      if (!Number.isNaN(fromDate)) return fromDate;
+    }
   }
-  return null;
+  if (raw === null || raw <= 0) return null;
+  return raw > SECONDS_EPOCH_CEILING ? raw : raw * 1000;
 }
 
 /**
@@ -220,7 +230,7 @@ export function readClaudeCodeCredentialFile(path) {
     const code = /** @type {{ code?: string }} */ (error)?.code;
     if (code === "ENOENT") return { ok: false, error: missingMessage(path) };
     const message = /** @type {{ message?: string }} */ (error)?.message ?? String(error);
-    return { ok: false, error: `cannot parse ${path}: ${message}` };
+    return { ok: false, error: `cannot parse ${path}: ${redact(message)}` };
   }
 
   const oauth = parsed?.claudeAiOauth;
@@ -268,9 +278,20 @@ export function readClaudeCodeKeychain(options = {}) {
   }
   if (!raw) return { ok: false, error: `no "${KEYCHAIN_SERVICE}" item in the macOS Keychain (or access was denied)` };
 
+  // macOS `security find-generic-password -w` prints hex when the secret contains
+  // newlines or non-ASCII bytes.
+  let decoded = raw;
+  if (!raw.startsWith("{") && /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0) {
+    try {
+      decoded = Buffer.from(raw, "hex").toString("utf-8").trim();
+    } catch {
+      decoded = raw;
+    }
+  }
+
   let oauth;
   try {
-    oauth = JSON.parse(raw)?.claudeAiOauth;
+    oauth = JSON.parse(decoded)?.claudeAiOauth;
   } catch {
     return { ok: false, error: `the "${KEYCHAIN_SERVICE}" Keychain item is not valid JSON` };
   }
@@ -311,16 +332,15 @@ export function recoverStaleClaudeLock(configDir, options = {}) {
   const staleMs = options.staleMs ?? DEFAULT_STALE_LOCK_MS;
 
   try {
-    const stat = statSync(lockPath);
+    const stat = lstatSync(lockPath);
+    if (!stat.isDirectory()) {
+      return { recovered: false, lockPath, error: "lock path is not a directory" };
+    }
     const ageMs = Math.max(0, now - stat.mtimeMs);
     if (ageMs < staleMs) {
       return { recovered: false, lockPath, ageMs };
     }
-    try {
-      rmdirSync(lockPath);
-    } catch {
-      rmSync(lockPath, { recursive: true, force: true });
-    }
+    rmdirSync(lockPath);
     return { recovered: true, lockPath, ageMs };
   } catch (error) {
     return {
@@ -415,6 +435,7 @@ export function loadClaudeCodeCredential(options = {}) {
  * @returns {{ ok: boolean, paths: string[], path: string | null, hasAccessToken: boolean, hasRefreshToken: boolean, expiresInMin: number | null, plan: string | null, error: string | null }}
  */
 export function describeClaudeCodeSource(options = {}) {
+  const now = options.now ?? Date.now();
   const paths = options.paths ?? resolveClaudeCodeCredentialPaths(options);
   const path = paths[0] ?? null;
   const configDir = path ? dirname(path) : resolveClaudeConfigDir(options);
@@ -424,7 +445,7 @@ export function describeClaudeCodeSource(options = {}) {
   if (existsSync(lockPath)) {
     try {
       const stat = statSync(lockPath);
-      const ageMs = (options.now ?? Date.now()) - stat.mtimeMs;
+      const ageMs = now - stat.mtimeMs;
       lockAgeSec = Math.max(0, Math.round(ageMs / 1000));
       hasStaleLock = ageMs >= (options.staleMs ?? DEFAULT_STALE_LOCK_MS);
     } catch {
@@ -455,7 +476,7 @@ export function describeClaudeCodeSource(options = {}) {
       described.hasRefreshToken = text(keychain.oauth.refreshToken) !== null;
       described.plan = text(keychain.oauth.subscriptionType);
       const expiresAtMs = epochMs(keychain.oauth.expiresAt);
-      described.expiresInMin = expiresAtMs === null ? null : Math.round((expiresAtMs - Date.now()) / 60000);
+      described.expiresInMin = expiresAtMs === null ? null : Math.round((expiresAtMs - now) / 60000);
       if (!described.hasAccessToken) {
         described.ok = false;
         described.error = `no Claude Code access token in the macOS Keychain item "${KEYCHAIN_SERVICE}"`;
@@ -481,7 +502,7 @@ export function describeClaudeCodeSource(options = {}) {
   described.hasRefreshToken = text(read.oauth.refreshToken) !== null;
   described.plan = text(read.oauth.subscriptionType);
   const expiresAtMs = epochMs(read.oauth.expiresAt);
-  described.expiresInMin = expiresAtMs === null ? null : Math.round((expiresAtMs - Date.now()) / 60000);
+  described.expiresInMin = expiresAtMs === null ? null : Math.round((expiresAtMs - now) / 60000);
   if (!hasAccessToken) {
     described.ok = false;
     described.error = `no Claude Code access token in ${path}; run \`claude\` once to sign in`;

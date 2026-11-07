@@ -2,8 +2,8 @@
  * Shared quota model.
  *
  * Every provider normalizes its own API response into `QuotaWindow[]` so the
- * terminal renderer, the Pi TUI extension and the Moshi adapter consume exactly
- * one shape.
+ * terminal renderer, the Pi TUI extension and JSON consumers receive a single
+ * canonical shape.
  */
 
 /**
@@ -30,7 +30,7 @@
  * @property {string} updatedAt            ISO timestamp.
  * @property {string} source               Credential source description.
  * @property {"pi" | "claude-code"} [sourceKind]  Which kind of store produced it.
- * @property {string | null} expiresInMin  Credential freshness, when known.
+ * @property {number | null} expiresInMin  Credential freshness, when known.
  */
 
 /**
@@ -193,8 +193,12 @@ export function windowFromSeconds(seconds) {
  */
 export function windowFromName(name) {
   const text = (stringValue(name) ?? "").toLowerCase();
-  if (text.includes("week")) return { id: "weekly", label: "Weekly window" };
-  if (text.includes("month")) return { id: "monthly", label: "Monthly window" };
+  if (text.includes("week") || text.includes("7d") || text.includes("7-day") || text.includes("seven")) {
+    return { id: "weekly", label: "Weekly window" };
+  }
+  if (text.includes("month") || text.includes("30d") || text.includes("30-day") || text.includes("thirty")) {
+    return { id: "monthly", label: "Monthly window" };
+  }
   if (text.includes("day") && !text.includes("week")) return { id: "daily", label: "Daily window" };
   if (text.includes("5h") || text.includes("five") || text.includes("session") || text.includes("hour")) {
     return { id: "5h", label: "5h window" };

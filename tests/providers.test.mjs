@@ -225,6 +225,8 @@ test("auth failures supersede throttling: isAuthFailure and backoff clearing", a
   assert.equal(isAuthFailure("Claude Code token expired or rejected; run `claude` once to refresh it"), true);
   assert.equal(isAuthFailure("HTTP 403: Forbidden"), true);
   assert.equal(isAuthFailure("rate limited (HTTP 429)"), false);
+  assert.equal(isAuthFailure("rate limited (HTTP 429); retry in 401s"), false);
+  assert.equal(isAuthFailure("ECONNREFUSED 127.0.0.1:4010"), false);
   assert.equal(isAuthFailure("timed out after 15000ms"), false);
   assert.equal(isAuthFailure(null), false);
 
@@ -263,4 +265,121 @@ test("auth failures supersede throttling: isAuthFailure and backoff clearing", a
   assert.equal(backoffState("claude", { now: EXPIRED_NOW, home: dir }).active, false);
   assert.equal(result.providers[0].ok, false);
   assert.match(result.providers[0].error ?? "", /expired|rejected/i);
+});
+
+test("antigravity: refreshable expired on-disk token preserves backoff, updates expiresInMin on refresh, and short-circuits failed refresh", async () => {
+  const { recordBackoff, backoffState } = await import("../src/providers/backoff.js");
+  const { collectQuota } = await import("../src/engine.js");
+  const { fileURLToPath } = await import("node:url");
+  const FIXTURE = fileURLToPath(new URL("./fixtures/fake-auth.json", import.meta.url));
+  const dir = mkdtempSync(join(tmpdir(), "pi-quota-agy-refresh-"));
+  const EXPIRED_NOW = 1_900_000_000_000;
+
+  // 1. When Antigravity has a refresh token, an active 429 backoff is NOT cleared before refresh
+  recordBackoff("antigravity", { retryAfterSec: 600, now: EXPIRED_NOW, home: dir });
+  const throttled = await collectQuota({
+    paths: [FIXTURE],
+    claudeCodePaths: [],
+    families: ["antigravity"],
+    now: EXPIRED_NOW,
+    fetchFn: async () => {
+      throw new Error("must not be called while throttled");
+    },
+    env: {},
+    stores: [],
+    allowBrowser: false,
+    home: dir,
+  });
+  assert.equal(backoffState("antigravity", { now: EXPIRED_NOW, home: dir }).active, true);
+  assert.equal(throttled.providers[0].expiresInMin, null, "throttled refreshable credential must not stamp negative expiresInMin");
+
+  // 2. When refresh succeeds, expiresInMin reflects the newly refreshed token and no expired warning is emitted
+  const dir2 = mkdtempSync(join(tmpdir(), "pi-quota-agy-refresh-ok-"));
+  const refreshed = await collectQuota({
+    paths: [FIXTURE],
+    claudeCodePaths: [],
+    families: ["antigravity"],
+    now: EXPIRED_NOW,
+    env: {
+      ANTIGRAVITY_CLIENT_ID: "custom-client-id",
+      ANTIGRAVITY_CLIENT_SECRET: "custom-client-secret",
+    },
+    fetchFn: async (url, init) => {
+      if (String(url).includes("oauth2.googleapis.com")) {
+        assert.match(String(init?.body ?? ""), /custom-client-id/);
+        return jsonResponse({ access_token: "ya29.fresh.token_part", expires_in: 3600 });
+      }
+      return jsonResponse({
+        groups: [
+          {
+            displayName: "Gemini Models",
+            buckets: [
+              {
+                bucketId: "seven-day",
+                displayName: "Weekly Limit Remaining",
+                remainingFraction: 0.8,
+                resetTime: "2030-01-02T00:00:00Z",
+              },
+            ],
+          },
+        ],
+      });
+    },
+    stores: [],
+    allowBrowser: false,
+    home: dir2,
+  });
+  assert.equal(refreshed.providers[0].ok, true);
+  assert.equal(refreshed.providers[0].expiresInMin, 60);
+  assert.equal(refreshed.warnings.length, 0);
+  assert.equal(refreshed.providers[0].windows[0].id, "weekly");
+
+  // 3. When refresh fails on an already-expired token, Cloud Code is not called with the dead token
+  let cloudCodeCalls = 0;
+  const failedRefresh = await collectQuota({
+    paths: [FIXTURE],
+    claudeCodePaths: [],
+    families: ["antigravity"],
+    now: EXPIRED_NOW,
+    fetchFn: async (url) => {
+      if (String(url).includes("oauth2.googleapis.com")) {
+        return new Response("upstream 503", { status: 503 });
+      }
+      cloudCodeCalls += 1;
+      return new Response("unauthorized", { status: 401 });
+    },
+    env: {},
+    stores: [],
+    allowBrowser: false,
+    home: dir2,
+  });
+  assert.equal(cloudCodeCalls, 0);
+  assert.equal(failedRefresh.providers[0].ok, false);
+  assert.match(failedRefresh.providers[0].error ?? "", /refresh failed/i);
+});
+
+test("claude: out-of-range decimal_places in extra_usage degrades gracefully without RangeError", async () => {
+  const { fetchQuota } = await import("../src/providers/claude.js");
+  const result = await fetchQuota(
+    {
+      provider: "anthropic",
+      family: "claude",
+      label: "Claude (Pi)",
+      source: "/tmp/fake",
+      identity: "user@example.com",
+      access: "sk-ant-oat01-fake",
+      kind: "oauth",
+    },
+    {
+      now: 1_800_000_000_000,
+      fetchFn: async () =>
+        jsonResponse({
+          five_hour: { utilization: 12, resets_at: "2030-01-01T05:00:00Z" },
+          seven_day: { utilization: 15, resets_at: "2030-01-07T00:00:00Z" },
+          extra_usage: { is_enabled: true, used_credits: 250, decimal_places: 999, currency: "USD" },
+        }),
+    },
+  );
+  assert.equal(result.ok, true);
+  assert.match(result.windows[1].note ?? "", /extra usage 250 USD/);
 });

@@ -19,8 +19,12 @@ export function redact(value) {
   text = text.replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "<email>");
   text = text.replace(/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{4,}\b/g, "<jwt>");
   text = text.replace(/\b(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/g, "$1<redacted>");
-  text = text.replace(/\b(ya29\.)[A-Za-z0-9_-]+/g, "$1<redacted>");
-  text = text.replace(/\b(1\/\/)[A-Za-z0-9_-]+/g, "$1<redacted>");
+  text = text.replace(/\b(gh[pousr]_)[A-Za-z0-9_]+/g, "$1<redacted>");
+  text = text.replace(/\b(github_pat_)[A-Za-z0-9_]+/g, "$1<redacted>");
+  text = text.replace(/\b(GOCSPX-)[A-Za-z0-9_-]+/g, "$1<redacted>");
+  text = text.replace(/\b(Fe26\.2\*)[A-Za-z0-9._~*-]+/g, "$1<redacted>");
+  text = text.replace(/\b(ya29\.)[A-Za-z0-9._-]+/g, "$1<redacted>");
+  text = text.replace(/\b(1\/\/)[A-Za-z0-9._/-]+/g, "$1<redacted>");
   text = text.replace(/\b(rt\.[\w.]{4})[A-Za-z0-9_-]+/g, "$1<redacted>");
   text = text.replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1<redacted>");
   text = text.replace(/\b((?:__Host-console_session|auth)=)[^;\s]+/gi, "$1<redacted>");
@@ -122,7 +126,7 @@ export async function requestJson(url, options = {}) {
       return {
         ok: false,
         status: response.status,
-        text: raw,
+        text: redact(raw),
         error: "response was not valid JSON",
       };
     }

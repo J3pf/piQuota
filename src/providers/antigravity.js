@@ -11,13 +11,14 @@
  * Response shape: `groups[].buckets[]` with
  * `{ bucketId, displayName, window, resetTime, remainingFraction, description }`.
  *
- * Google does not rotate this refresh token, but Pi owns the credential and this
- * project is read-only, so no refresh is performed here either.
+ * Google does not rotate this refresh token, so the access token may be
+ * refreshed in memory when expired; the refreshed token is never written back
+ * to disk.
  */
 
 import { buildWindow, clampPercent, degradedResult, displayIdentity, finiteNumber, stringValue, windowFromName } from "../model.js";
 import { requestJson } from "../http.js";
-import { describeOAuthClient, ensureFreshAccessToken } from "./antigravity-oauth.js";
+import { describeOAuthClient, ensureFreshAccessToken, resolveOAuthClient } from "./antigravity-oauth.js";
 
 const CLOUD_CODE_BASES = [
   "https://daily-cloudcode-pa.googleapis.com",
@@ -91,7 +92,7 @@ function windowFromBucket(bucket, context, now) {
   if (remainingFraction === null) return null;
 
   const windowName = stringValue(bucket.window) ?? stringValue(bucket.bucketId) ?? "";
-  const mapped = windowFromName(windowName.replace(/^[a-z]+-/, ""));
+  const mapped = windowFromName(windowName.replace(/^(?:gemini|claude|gpt|models)-/i, ""));
   const displayName = stringValue(bucket.displayName);
   const description = stringValue(bucket.description);
   const tag = context.multiGroup ? `${shortGroup(context.groupName)} · ` : "";
@@ -132,14 +133,31 @@ export async function fetchQuota(credential, options = {}) {
   const fetchFn = options.fetchFn;
   const account = { access: credential.access, refresh: credential.refresh, expiresAtMs: credential.expiresAtMs ?? null };
 
+  const client = resolveOAuthClient({ env: options.env });
   // In-memory refresh only: Google does not rotate this refresh token, so the
   // copy Pi stores stays valid and nothing is written back.
   const freshness = await ensureFreshAccessToken(account, {
+    client,
     fetchFn,
     timeoutMs: options.timeoutMs,
     now,
     enabled: options.refresh,
   });
+  if (account.expiresAtMs !== null) {
+    base.expiresInMin = Math.round((account.expiresAtMs - now) / 60000);
+  }
+  if (
+    account.expiresAtMs !== null &&
+    account.expiresAtMs <= now &&
+    freshness.error &&
+    options.refresh !== false &&
+    Boolean(credential.refresh)
+  ) {
+    return degradedResult({
+      ...base,
+      error: `Antigravity access token refresh failed: ${freshness.error}`,
+    });
+  }
   let projectId = credential.projectId ?? null;
 
   /** @type {string | null} */
@@ -151,6 +169,7 @@ export async function fetchQuota(credential, options = {}) {
       projectId = await resolveProjectId(account.access, cloudBase, fetchFn, options.timeoutMs);
     }
     if (!projectId) {
+      authFailed = false;
       lastError = "Antigravity credential has no Cloud Code project id and loadCodeAssist did not return one";
       continue;
     }

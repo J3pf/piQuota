@@ -8,6 +8,7 @@
 
 import { checkFreshness, LABEL_BY_FAMILY, loadPiCredentials, resolveAuthPaths } from "./auth/pi-auth.js";
 import { loadClaudeCodeCredential } from "./auth/claude-code-auth.js";
+import { redact } from "./http.js";
 import { degradedResult, displayIdentity, selectPrimaryWindow } from "./model.js";
 import { backoffState, clearBackoff, isAuthFailure, isThrottled, recordBackoff, retryAfterFromError } from "./providers/backoff.js";
 import { fetchQuota as fetchClaude } from "./providers/claude.js";
@@ -244,7 +245,10 @@ export async function collectQuota(options = {}) {
       // Authentication failures supersede throttling: if any credential for this
       // family is already known to be expired, waiting out a rate limit is useless
       // and misleading. We clear backoff immediately so the auth failure surfaces.
+      const isRefreshable = (credential) =>
+        family === "antigravity" && Boolean(credential.refresh) && options.refresh !== false;
       const hasExpiredToken = credentials.some((credential) => {
+        if (isRefreshable(credential)) return false;
         const freshness = checkFreshness(credential, now);
         return !freshness.fresh;
       });
@@ -254,6 +258,9 @@ export async function collectQuota(options = {}) {
 
       const throttle = backoffState(family, { now, env, home: options.home });
       if (throttle.active && !options.force) {
+        const pausedExpiresInMin = isRefreshable(credentials[0])
+          ? null
+          : checkFreshness(credentials[0], now).expiresInMin;
         byFamily[family] = [
           degradedResult({
             family,
@@ -264,6 +271,7 @@ export async function collectQuota(options = {}) {
             error: `backing off after a throttle: next attempt in ${throttle.secondsLeft}s`,
             source: credentials[0].source,
             now,
+            expiresInMin: pausedExpiresInMin,
           }),
         ];
         return;
@@ -274,7 +282,7 @@ export async function collectQuota(options = {}) {
       const familyWarnList = [];
       for (const credential of credentials) {
         const freshness = checkFreshness(credential, now);
-        if (!freshness.fresh) {
+        if (!freshness.fresh && !isRefreshable(credential)) {
           familyWarnList.push(
             `${family}: the ${expiredTokenName(credential)} expired ${Math.abs(freshness.expiresInMin ?? 0)}m ago; ${refreshHint(credential)}`,
           );
@@ -293,6 +301,15 @@ export async function collectQuota(options = {}) {
             stores: options.stores,
             allowBrowser: options.allowBrowser,
           });
+          if (
+            isRefreshable(credential) &&
+            typeof result.expiresInMin === "number" &&
+            result.expiresInMin < 0
+          ) {
+            familyWarnList.push(
+              `${family}: the ${expiredTokenName(credential)} expired ${Math.abs(result.expiresInMin)}m ago; ${refreshHint(credential)}`,
+            );
+          }
           if (isThrottled(result.error)) {
             const seconds = recordBackoff(family, {
               retryAfterSec: retryAfterFromError(result.error),
@@ -311,8 +328,8 @@ export async function collectQuota(options = {}) {
             degradedResult({
               family,
               label: credential.label,
-              account: credential.email ?? credential.accountId ?? "unknown",
-              error: `provider crashed: ${/** @type {{ message?: string }} */ (error)?.message ?? String(error)}`,
+              account: displayIdentity(credential),
+              error: redact(`provider crashed: ${/** @type {{ message?: string }} */ (error)?.message ?? String(error)}`),
               source: credential.source,
               now,
               expiresInMin: freshness.expiresInMin,
@@ -333,8 +350,8 @@ export async function collectQuota(options = {}) {
 
   const providers = families.flatMap((family) => byFamily[family] ?? []);
 
-  // Stamp the primary window so the terminal, the Pi TUI and the Moshi adapter
-  // all agree on which window represents a provider, with no duplicated rules.
+  // Stamp the primary window so the terminal, the Pi TUI and external JSON
+  // consumers all agree on which window represents a provider, with no duplicated rules.
   for (const provider of providers) {
     provider.primaryWindowId = selectPrimaryWindow(provider.windows ?? [])?.id ?? null;
   }
@@ -388,14 +405,4 @@ function refreshHint(credential) {
   return credential.sourceKind === "claude-code"
     ? "run `claude` once to refresh it"
     : "use that provider in Pi to refresh it";
-}
-
-/**
- * Convenience accessor used by the renderers.
- *
- * @param {PiQuotaReport} report
- * @returns {import("./model.js").QuotaResult | null}
- */
-export function firstForFamily(report, family) {
-  return report.byFamily[family]?.[0] ?? null;
 }

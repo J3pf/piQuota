@@ -51,7 +51,7 @@ Quota:
   --version          Print the version and exit
 
 Auth (OpenCode Go session, the only credential Pi does not store):
-  piquota auth opencode            open the login in Firefox and capture the cookie
+  piquota auth opencode            open the login and capture the browser cookie
   piquota auth opencode --paste    read the cookie from stdin instead
   piquota auth opencode --no-browser
                                    print the URL without launching a browser
@@ -81,7 +81,6 @@ async function main() {
   const args = parseArgs(argv);
   const bare = args.positionals;
   const command = bare[0] ?? null;
-  const agentMode = "native";
   const refresh = !argv.includes("--no-refresh");
 
   if (args.help) {

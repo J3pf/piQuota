@@ -27,7 +27,7 @@ export const FAMILY_BY_PROVIDER = {
   "opencode-go": "opencode-go",
 };
 
-/** Display label used by every surface (terminal, Pi TUI, Moshi cards). */
+/** Display label used by every surface (terminal, Pi TUI, JSON feed). */
 export const LABEL_BY_FAMILY = {
   codex: "Codex (Pi)",
   claude: "Claude (Pi)",

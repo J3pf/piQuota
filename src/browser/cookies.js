@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createDecipheriv, pbkdf2Sync } from "node:crypto";
+import { createDecipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -280,9 +280,20 @@ function linuxChromiumPassword(app, options = {}) {
     return null;
   }
   if (secretStoragePasswords.has(app)) return secretStoragePasswords.get(app);
+  if (secretStoragePasswords.has("__unavailable__")) return null;
 
   let password = null;
   for (const candidate of candidates) {
+    if (secretStoragePasswords.has(candidate)) {
+      const cached = secretStoragePasswords.get(candidate);
+      if (cached) {
+        password = cached;
+        break;
+      }
+      continue;
+    }
+    let candidatePassword = null;
+    let serviceUnavailable = false;
     for (const args of [
       ["lookup", "application", candidate],
       ["lookup", "service", `${candidate} Safe Storage`],
@@ -294,17 +305,61 @@ function linuxChromiumPassword(app, options = {}) {
           timeout: 2000,
         }).replace(/[\r\n]+$/, "");
         if (value.length > 0) {
-          password = value;
+          candidatePassword = value;
           break;
         }
-      } catch {
-        // Missing secret-tool, locked keyrings and absent entries are expected.
+      } catch (error) {
+        // Missing secret-tool or timed-out D-Bus Secret Service should not block
+        // every subsequent candidate lookup for another 2s each.
+        if (error?.code === "ENOENT" || error?.code === "ETIMEDOUT" || error?.signal === "SIGTERM") {
+          serviceUnavailable = true;
+          break;
+        }
       }
     }
-    if (password) break;
+    secretStoragePasswords.set(candidate, candidatePassword);
+    if (candidatePassword) {
+      password = candidatePassword;
+      break;
+    }
+    if (serviceUnavailable) {
+      secretStoragePasswords.set("__unavailable__", null);
+      break;
+    }
   }
   secretStoragePasswords.set(app, password);
   return password;
+}
+
+/**
+ * @param {Buffer} bytes
+ * @returns {boolean}
+ */
+function hasKnownCookiePrefix(bytes) {
+  return bytes.subarray(0, 6).toString("ascii").startsWith("Fe26.2")
+    || bytes.subarray(0, 3).toString("ascii") === "st_";
+}
+
+/**
+ * @param {Buffer} decrypted
+ * @param {string | undefined} host
+ * @returns {boolean}
+ */
+function hasHostDigestPrefix(decrypted, host) {
+  if (decrypted.length <= 32) return false;
+  const prefix = decrypted.subarray(0, 32);
+  if (typeof host === "string" && host.length > 0) {
+    const bare = host.replace(/^\./, "");
+    for (const candidate of [host, bare, `.${bare}`]) {
+      if (prefix.equals(createHash("sha256").update(candidate).digest())) {
+        return true;
+      }
+    }
+  }
+  // Even without a known host string, Chromium 130+ (meta version >= 24)
+  // prepends a 32-byte SHA-256 digest to both v10 and v11 values.
+  const rest = decrypted.subarray(32);
+  return !isPrintableAscii(prefix) && (hasKnownCookiePrefix(rest) || isPrintableAscii(rest));
 }
 
 /**
@@ -312,7 +367,7 @@ function linuxChromiumPassword(app, options = {}) {
  * callers/tests to supply an already-resolved Safe Storage password.
  *
  * @param {Buffer | Uint8Array} encryptedValue
- * @param {{ app?: string, password?: string | null, secretTool?: (args: string[]) => string | null }} [options]
+ * @param {{ app?: string, host?: string, password?: string | null, secretTool?: (args: string[]) => string | null }} [options]
  * @returns {string | null}
  */
 export function decryptLinuxChromiumCookie(encryptedValue, options = {}) {
@@ -330,13 +385,14 @@ export function decryptLinuxChromiumCookie(encryptedValue, options = {}) {
     const key = pbkdf2Sync(password, "saltysalt", 1, 16, "sha1");
     const decipher = createDecipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
     const decrypted = Buffer.concat([decipher.update(encrypted.subarray(3)), decipher.final()]);
-    const payload = version === "v11" ? decrypted.subarray(32) : decrypted;
-    if (payload.length === 0) return null;
-    if (version === "v11") {
-      const knownPrefix = payload.subarray(0, 6).toString("ascii").startsWith("Fe26.2")
-        || payload.subarray(0, 3).toString("ascii") === "st_";
-      if (!knownPrefix && !isPrintableAscii(payload)) return null;
+    let payload = decrypted;
+    if (hasHostDigestPrefix(decrypted, options.host)) {
+      payload = decrypted.subarray(32);
+    } else if (version === "v11" && decrypted.length > 32 && !hasKnownCookiePrefix(decrypted)) {
+      payload = decrypted.subarray(32);
     }
+    if (payload.length === 0) return null;
+    if (!hasKnownCookiePrefix(payload) && !isPrintableAscii(payload)) return null;
     return payload.toString("utf8");
   } catch {
     return null;
@@ -362,8 +418,14 @@ function chromiumStoreReadability(dbPath, app, options = {}) {
   const copy = withCopy(dbPath);
   let database;
   try {
-    database = new DatabaseSync(copy.db, { readOnly: true });
-    const rows = database.prepare("select encrypted_value from cookies where encrypted_value is not null and length(encrypted_value) > 0").all();
+    try {
+      database = new DatabaseSync(copy.db, { readOnly: true });
+    } catch {
+      database = new DatabaseSync(copy.db);
+    }
+    const rows = database.prepare(
+      "select encrypted_value from cookies where encrypted_value is not null and length(encrypted_value) > 0 limit 1",
+    ).all();
     for (const row of rows) {
       const encrypted = Buffer.from(row.encrypted_value);
       const version = encrypted.subarray(0, 3).toString("ascii");
@@ -488,7 +550,11 @@ function readChromiumCookies(dbPath, query) {
   const copy = withCopy(dbPath);
   let database;
   try {
-    database = new DatabaseSync(copy.db, { readOnly: true });
+    try {
+      database = new DatabaseSync(copy.db, { readOnly: true });
+    } catch {
+      database = new DatabaseSync(copy.db);
+    }
     const sql = query.name
       ? "select host_key as host, name, value, encrypted_value, path from cookies where host_key like ? and name = ?"
       : "select host_key as host, name, value, encrypted_value, path from cookies where host_key like ?";
@@ -542,6 +608,7 @@ export function findCookie(options) {
       if (store.browser === "chromium" && row.encrypted_value?.length > 0) {
         const value = decryptLinuxChromiumCookie(row.encrypted_value, {
           app: store.app ?? "chromium",
+          host: row.host || options.host,
           secretTool: options.secretTool,
         });
         if (value) return { found: true, value, store, candidates: scanned, encryptedOnly: false };

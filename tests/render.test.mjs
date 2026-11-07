@@ -295,3 +295,30 @@ test("model defensive parsing: booleans, arrays, reset seconds, and phantom quot
 
   assert.equal(humanDuration(45.8), "46s");
 });
+
+test("renderPanel clips ANSI-colored lines by visible width without truncating healthy providers", async () => {
+  const { ansiPalette } = await import("../src/render/theme.js");
+  const ansiPaint = ansiPalette({ color: true });
+  const lines = renderPanel(
+    [
+      providerFixture({
+        windows: [
+          windowFixture({
+            id: "5h",
+            label: "5h window",
+            remainingPercent: 84,
+            resetsInSec: 7200,
+            note: "extra usage 4.50 USD",
+          }),
+        ],
+      }),
+    ],
+    ansiPaint,
+    { generatedAt: "2030-01-01T00:00:00.000Z", warnings: [] },
+  );
+  const plainLines = lines.map((line) => line.replace(/\u001b\[[0-9;]*m/g, ""));
+  assert.match(plainLines.join("\n"), /84% left · reset in 2h 0m · extra usage 4\.50 USD/);
+  for (let i = 1; i < lines.length; i++) {
+    assert.equal(visibleLength(lines[i]), visibleLength(lines[0]), `line ${i} visible width matches top border`);
+  }
+});

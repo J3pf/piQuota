@@ -102,16 +102,43 @@ export function renderStatusLine(providers, paint) {
   return parts.join(paint("dim", "  ·  "));
 }
 
+const ANSI_SGR_RE = /\u001b\[[0-9;]*m/g;
+
 /**
- * Truncate plain text to a visible width, appending an ellipsis when cut.
+ * Truncate text (plain or ANSI SGR colored) to a visible width, appending an
+ * ellipsis when cut and preserving SGR reset safety.
  *
  * @param {string} text
  * @param {number} width
  * @returns {string}
  */
 function clip(text, width) {
-  if (text.length <= width) return text;
-  return text.slice(0, Math.max(0, width - 1)).trimEnd() + "…";
+  if (width <= 0) return "";
+  if (visibleLength(text) <= width) return text;
+  const target = Math.max(0, width - 1);
+  if (!text.includes("\u001b[")) {
+    return text.slice(0, target).trimEnd() + "…";
+  }
+  let visible = 0;
+  let index = 0;
+  let out = "";
+  let sawAnsi = false;
+  while (index < text.length && visible < target) {
+    if (text.charCodeAt(index) === 0x1b && text[index + 1] === "[") {
+      const match = /^\u001b\[[0-9;]*m/.exec(text.slice(index));
+      if (match) {
+        out += match[0];
+        index += match[0].length;
+        sawAnsi = true;
+        continue;
+      }
+    }
+    out += text[index];
+    visible += 1;
+    index += 1;
+  }
+  out = out.replace(/[ \t]+$/, "");
+  return sawAnsi ? `${out}…\u001b[0m` : `${out}…`;
 }
 
 /**
@@ -324,7 +351,7 @@ export function renderPanel(providers, paint, meta = {}) {
  * @returns {number}
  */
 export function visibleLength(text) {
-  return text.replace(/\u001b\[[0-9;]*m/g, "").length;
+  return text.replace(ANSI_SGR_RE, "").length;
 }
 
 /**
@@ -363,5 +390,3 @@ export function renderCompact(providers, paint) {
     return `${paint("bold", provider.label.padEnd(20))} ${paint(key, status)}`;
   });
 }
-
-export { clip as truncateVisibleText, wrapPlain as wrapVisibleText };

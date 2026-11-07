@@ -13,7 +13,7 @@
 | **OpenCode via Firefox** | `~/.mozilla/firefox/` | Auto-discovers Windows Firefox (`/mnt/c/Users/...`) | `~/Library/Application Support/Firefox/` | `%APPDATA%\Mozilla\Firefox\` |
 | **OpenCode via Chromium** | Plaintext SQLite / Keyring | ⚠️ Encrypted with Windows DPAPI (use Firefox or `--paste`) | ⚠️ Encrypted with macOS Keychain (use Firefox or `--paste`) | ⚠️ Encrypted with DPAPI (use Firefox or `--paste`) |
 | **Pi `auth.json` lookup** | `~/.pi/agent/auth.json` | `~/.pi/agent/auth.json` + `/mnt/c/Users/...` (deduplicated) | `~/.pi/agent/auth.json` | `%USERPROFILE%\.pi\agent\auth.json` |
-| **Claude Code store** | `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) | same, plus `/mnt/c/Users/<profile>/.claude/.credentials.json` | `~/.claude/.credentials.json` | `%USERPROFILE%\.claude\.credentials.json` |
+| **Claude Code store** | `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) | same, plus `/mnt/c/Users/<profile>/.claude/.credentials.json` | `~/.claude/.credentials.json`, else `Claude Code-credentials` in macOS Keychain | `%USERPROFILE%\.claude\.credentials.json` |
 
 ---
 
@@ -81,7 +81,7 @@ credits.
 | --- | --- | --- |
 | Native Linux | `~/.claude/.credentials.json` | `CLAUDE_CONFIG_DIR` relocates it, and is honoured. |
 | WSL2 | `~/.claude/.credentials.json`, then `/mnt/c/Users/<profile>/.claude/.credentials.json` | The Linux-side store wins when both exist; discovery never spawns `cmd.exe`. |
-| macOS | `~/.claude/.credentials.json` | Same file, same format. |
+| macOS | `~/.claude/.credentials.json`, else macOS Keychain (`Claude Code-credentials`) | Falls back to read-only `security find-generic-password` when the file is absent. |
 | Windows | `%USERPROFILE%\.claude\.credentials.json` | Run `piquota` from Windows only if Node >= 20 is on `PATH`. |
 
 Set `PI_QUOTA_CLAUDE_CODE_CREDENTIALS=/path/to/.credentials.json` to point at a

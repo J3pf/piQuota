@@ -63,7 +63,7 @@ function windowFromObject(window, id, label, note, now) {
  * @param {number} now
  * @returns {import("../model.js").QuotaWindow | null}
  */
-function windowFromLimits(limits, id, now) {
+function windowFromLimits(limits, id, now, extraNote = null) {
   if (!Array.isArray(limits)) return null;
   for (const entry of limits) {
     const limit = record(entry);
@@ -77,12 +77,14 @@ function windowFromLimits(limits, id, now) {
     const used = clampPercent(limit.percent);
     if (used === null) continue;
     const resets = parseReset(limit.resets_at, now);
+    const severityNote = stringValue(limit.severity) ? `severity ${stringValue(limit.severity)}` : null;
+    const note = [severityNote, extraNote].filter(Boolean).join(" · ") || null;
     return buildWindow({
       id,
       label: id === "5h" ? "5h window" : "Weekly window",
       usedPercent: used,
       resetsAt: resets.resetsAt,
-      note: stringValue(limit.severity) ? `severity ${stringValue(limit.severity)}` : null,
+      note,
       now,
     });
   }
@@ -100,7 +102,11 @@ function formatOverage(extra) {
   if (extra.is_enabled !== true) return null;
   const credits = finiteNumber(extra.used_credits);
   if (credits === null) return null;
-  const decimals = finiteNumber(extra.decimal_places);
+  const rawDecimals = finiteNumber(extra.decimal_places);
+  const decimals =
+    rawDecimals !== null && Number.isInteger(rawDecimals) && rawDecimals >= 0 && rawDecimals <= 20
+      ? rawDecimals
+      : null;
   const amount = decimals === null ? credits : credits / Math.pow(10, decimals);
   const currency = stringValue(extra.currency);
   return `extra usage ${amount.toFixed(decimals ?? 0)}${currency ? ` ${currency}` : ""}`;
@@ -116,8 +122,8 @@ export async function fetchQuota(credential, options = {}) {
   const fromClaudeCode = credential.sourceKind === "claude-code";
   const base = {
     family: "claude",
-    // The label never changes: it marks the card as ours in Moshi, and which
-    // store was read is reported by `sourceKind` instead, where it is diagnostic.
+    // The label stays stable across both stores; which store was read is
+    // reported by `sourceKind` instead, where it is diagnostic.
     label: credential.label ?? "Claude (Pi)",
     account: displayIdentity(credential),
     source: credential.source,
@@ -170,7 +176,7 @@ export async function fetchQuota(credential, options = {}) {
     if (fallback) windows.push(fallback);
   }
   if (!fromSevenDay) {
-    const fallback = windowFromLimits(body.limits, "weekly", now);
+    const fallback = windowFromLimits(body.limits, "weekly", now, overageNote);
     if (fallback) windows.push(fallback);
   }
 

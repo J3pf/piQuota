@@ -9,10 +9,9 @@ Field **names** only; values never appear in code, logs, tests or artifacts.
 | --- | --- | --- |
 | Pi provider store | `$PI_QUOTA_AUTH_PATH` / `$PI_AUTH_PATH`, else `$HOME/.pi/agent/auth.json` | read-only (`flag: "r"`) |
 | Pi store (WSL) | `/mnt/c/Users/<profile>/.pi/agent/auth.json` | read-only, auto-discovered, de-duplicated against the Linux store |
-| Claude Code CLI store | `$PI_QUOTA_CLAUDE_CODE_CREDENTIALS`, else `$CLAUDE_CONFIG_DIR/.credentials.json`, else `$HOME/.claude/.credentials.json` | read-only (`flag: "r"`); the second Claude source |
+| Claude Code CLI store | `$PI_QUOTA_CLAUDE_CODE_CREDENTIALS`, else `$CLAUDE_CONFIG_DIR/.credentials.json`, else `$HOME/.claude/.credentials.json` (plus `Claude Code-credentials` in macOS Keychain when the file is absent) | read-only (`flag: "r"` / `security find-generic-password`); the second Claude source |
 | Claude Code profile | `$CLAUDE_CONFIG_DIR/.claude.json`, else `$HOME/.claude.json` | read-only; only `oauthAccount.emailAddress`, `displayName` and `organizationType` are read, never project history |
 | opencode.ai session | `OPENCODE_GO_AUTH_COOKIE`, else `${XDG_CONFIG_HOME:-~/.config}/pi-quota/opencode-cookie`, else a local browser cookie database (Firefox, or Chromium/Chrome/Edge/Brave on Linux) | read-only; browser databases are copied to a temp dir first |
-| Moshi host secret | `~/.local/state/moshi/secrets.json` | read-only; `host-secret` is sent only as a Bearer header to the paired host |
 
 Nothing else is read. `~/.shuvquota.env` is no longer used: the project does not
 depend on any other tool's configuration.
@@ -94,8 +93,6 @@ Codex JWT **payload** only (signature never verified, token never disclosed):
 | `PI_QUOTA_CLAUDE_SOURCE` | `auto` (default, prefers Claude Code), `claude-code`, or `pi` |
 | `CLAUDE_CONFIG_DIR` | Claude Code's own relocation variable, honoured as-is |
 | `OPENCODE_GO_AUTH_COOKIE`, `OPENCODE_GO_WORKSPACE_ID` | supply the opencode.ai session directly |
-| `MOSHI_API_BASE` | override the paired-host base URL |
-| `MOSHI_SOCKET_PATH` | where the approval mirror dials the daemon |
 | `ANTIGRAVITY_CLIENT_ID`, `ANTIGRAVITY_CLIENT_SECRET` | override the public Google client |
 | `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME` | relocate the cache, state and cookie/workspace files; the file still lives inside its own `pi-quota` folder |
 | `NO_COLOR`, `TERM=dumb` | drop ANSI colour from every surface |
@@ -138,7 +135,8 @@ credential is needed: the `auth` cookie for `opencode.ai`.
 
 ## What leaves the machine
 
-Only `piquota moshi push` sends anything, and only to the user's own paired host:
-percentages, window labels, reset timestamps, plan names, an agent id from the
-server's allowed union, the host name, and a stable `pi:<family>` account id.
-No token, cookie, session key, or e-mail address.
+Only read-only quota queries to the upstream provider APIs leave this machine
+(using the respective provider's own credential). Local outputs (`piquota --json`
+and `piquota omarchy`) emit percentages, window labels, reset timestamps, and
+plan names; no token, refresh token, cookie, session key, or raw e-mail address
+is ever written to cache or external records.

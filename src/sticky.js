@@ -6,7 +6,7 @@
  * are passed through, because hiding them would be misleading.
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -40,7 +40,7 @@ function orderedProviders(report, replacements, byFamily) {
  * act exactly while a provider was throttled — the one case it exists for.
  */
 const TRANSIENT =
-  /HTTP 5\d\d|429|rate limited|throttle|backing off|timed out|timeout|ECONNRESET|socket|network|fetch failed|ENOTFOUND|ETIMEDOUT|EPIPE|ECONNREFUSED|aborted|hang up|request failed/i;
+  /HTTP 5\d\d|429|rate limited|throttle|backing off|timed out|timeout|ECONNRESET|socket|network|fetch failed|ENOTFOUND|ETIMEDOUT|EPIPE|ECONNREFUSED|aborted|hang up/i;
 
 /**
  * @param {string | null} error
@@ -50,129 +50,6 @@ export function isTransientError(error) {
   if (!error) return false;
   if (isAuthFailure(error)) return false;
   return TRANSIENT.test(error);
-}
-
-/**
- * Merge a fresh report over a previous one, preserving healthy windows when
- * a provider fails transiently.
- *
- * @param {import("./engine.js").PiQuotaReport | null} previous
- * @param {import("./engine.js").PiQuotaReport} next
- * @param {{ now?: number, maxAgeMs?: number }} [options]
- * @returns {{ report: import("./engine.js").PiQuotaReport, reused: string[] }}
- */
-export function mergeSticky(previous, next, options = {}) {
-  if (!previous) return { report: next, reused: [] };
-  const nextTime = next.generatedAt ? Date.parse(next.generatedAt) : NaN;
-  const now = options.now ?? (!Number.isNaN(nextTime) ? nextTime : Date.now());
-  const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_STICKY_AGE_MS;
-
-  /** @type {string[]} */
-  const reused = [];
-  /** @type {Record<string, import("./model.js").QuotaResult[]>} */
-  const byFamily = {};
-  /** @type {Map<string, import("./model.js").QuotaResult>} */
-  const replacements = new Map();
-
-  for (const [family, results] of Object.entries(next.byFamily)) {
-    const fresh = results[0];
-    const prior = previous.byFamily[family]?.[0];
-    const priorTimestamp = prior?.updatedAt ? Date.parse(prior.updatedAt) : NaN;
-    const isPriorFresh = Number.isNaN(priorTimestamp) || now - priorTimestamp <= maxAgeMs;
-    const hasExpiredToken = fresh?.expiresInMin !== null && fresh?.expiresInMin !== undefined && fresh.expiresInMin <= 0;
-    const keepPrior =
-      fresh &&
-      prior &&
-      !fresh.ok &&
-      prior.ok &&
-      prior.windows.length > 0 &&
-      !hasExpiredToken &&
-      !isAuthFailure(fresh.error) &&
-      isPriorFresh &&
-      isTransientError(fresh.error);
-
-    if (!keepPrior) {
-      byFamily[family] = results;
-      continue;
-    }
-
-    reused.push(family);
-    const priorList = previous.byFamily[family] || (prior ? [prior] : []);
-    const carriedList = priorList.map((item) => ({
-      ...item,
-      account: item.account,
-      updatedAt: item.updatedAt,
-      windows: (item.windows ?? []).map((win) => {
-        if (!win.resetsAt) return win;
-        const parsedMs = Date.parse(win.resetsAt);
-        if (Number.isNaN(parsedMs)) return win;
-        return { ...win, resetsInSec: Math.max(0, Math.round((parsedMs - now) / 1000)) };
-      }),
-    }));
-    byFamily[family] = carriedList;
-    if (carriedList[0]) replacements.set(family, carriedList[0]);
-  }
-
-  // Rebuild in the report's own order so the rings never jump position between
-  // refreshes; the map is only a lookup.
-  const providers = orderedProviders(next, replacements, byFamily);
-
-  return {
-    report: {
-      ...next,
-      providers,
-      byFamily,
-      warnings: reused.length > 0
-        ? [...next.warnings, `reused the previous snapshot for: ${reused.join(", ")} (transient upstream error)`]
-        : next.warnings,
-    },
-    reused,
-  };
-}
-
-/**
- * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
- * @returns {string}
- */
-export function resolveLastPublishedPath(options = {}) {
-  if (options.path) return options.path;
-  const env = options.env ?? process.env;
-  const cacheHome = options.home ? join(options.home, ".cache") : (env.XDG_CACHE_HOME || join(homedir(), ".cache"));
-  return join(cacheHome, "pi-quota", "last-published.json");
-}
-
-/**
- * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
- * @returns {import("./engine.js").PiQuotaReport | null}
- */
-export function loadLastPublished(options = {}) {
-  try {
-    const parsed = JSON.parse(readFileSync(resolveLastPublishedPath(options), "utf-8"));
-    return parsed?.report && Array.isArray(parsed.report.providers) ? parsed.report : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * @param {import("./engine.js").PiQuotaReport} report
- * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
- * @returns {{ ok: boolean, error?: string }}
- */
-export function saveLastPublished(report, options = {}) {
-  const path = resolveLastPublishedPath(options);
-  try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = `${path}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify({ savedAt: Date.now(), report }, null, 2), {
-      encoding: "utf-8",
-      mode: 0o600,
-    });
-    renameSync(temporary, path);
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, error: /** @type {{ message?: string }} */ (error)?.message ?? String(error) };
-  }
 }
 
 /**
@@ -215,13 +92,21 @@ export function readLastGood(options = {}) {
  */
 function writeLastGood(state, options = {}) {
   const path = resolveLastGoodPath(options);
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const temporary = `${path}.${process.pid}.tmp`;
     writeFileSync(temporary, JSON.stringify(state, null, 2), { encoding: "utf-8", mode: 0o600 });
+    try {
+      chmodSync(temporary, 0o600);
+    } catch {
+      // Best-effort in environments where chmod is not supported.
+    }
     renameSync(temporary, path);
     return true;
   } catch {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {}
     return false;
   }
 }

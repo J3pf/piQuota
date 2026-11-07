@@ -43,8 +43,7 @@ shuvquota, and it never writes to a credential file.
   | Path | What |
   | --- | --- |
   | `~/.cache/pi-quota/usage.json` | the report cache |
-  | `~/.cache/pi-quota/refresh-state.json` | each family's own refresh clock |
-  | `~/.cache/pi-quota/last-published.json`, `last-good.json`, `backoff.json` | sticky snapshots and throttle state |
+  | `~/.cache/pi-quota/last-good.json`, `backoff.json` | sticky snapshots and throttle state |
   | `${XDG_CONFIG_HOME:-~/.config}/pi-quota/opencode-cookie` | only after `piquota auth opencode`, mode `600` |
   | `~/.pi/agent/extensions/*.ts` | only by `install.sh` |
 
@@ -55,7 +54,7 @@ shuvquota, and it never writes to a credential file.
 | Claude | Claude Code CLI store, else `anthropic.access` | `GET api.anthropic.com/api/oauth/usage` | ✅ 5h + weekly + plan |
 | Codex | `openai-codex.access` + `accountId` | `GET chatgpt.com/backend-api/wham/usage` | ✅ 5h + weekly + plan |
 | Antigravity | `antigravity.access` + `projectId` | `POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` | ✅ Gemini + Claude/GPT buckets, **with in-memory refresh** |
-| OpenCode Go | opencode.ai session cookie | `GET opencode.ai/workspace/<id>/go` | ✅ weekly + monthly, verified live |
+| OpenCode Go | opencode.ai session cookie | `GET opencode.ai/console/api/go/status` (fallback `GET opencode.ai/workspace/<id>/go`) | ✅ 5h + weekly + monthly, verified live |
 | GitHub Actions (opt-in) | Authenticated `gh` CLI | `gh api /organizations/<org>/settings/billing/usage/summary?product=Actions` | ✅ org-wide monthly Linux minutes, plan-derived allowance |
 
 Four findings worth recording, each of which cost a wrong hypothesis:
@@ -64,9 +63,9 @@ Four findings worth recording, each of which cost a wrong hypothesis:
    `User-Agent: antigravity/cli/...` the backend answers
    `403 You do not have a valid license of this product` for a healthy token.
 2. **Pi's `opencode-go` entry is an OpenCode Zen API key, not a Go session.** It
-   validates (`/zen/v1/models` → 200, 70 models) but exposes no usage, and every
-   `/api/*` path on opencode.ai returns 404: the Go windows only exist in the
-   authenticated SSR page.
+   validates (`/zen/v1/models` → 200, 70 models) but exposes no usage: the Go
+   windows live behind the authenticated Console status API (`/console/api/go/status`)
+   and workspace SSR page (`/workspace/<id>/go`).
 3. **`primaryWindowId` identifies the most urgent window.** The CLI computes the
    shortest, most pressing window (e.g. 5h session before weekly) so downstream UI
    consumers like `rp-host` and the Pi TUI render priority pills without reimplementing
@@ -135,21 +134,21 @@ curl -fsSL https://raw.githubusercontent.com/J3fp/piQuota/master/install.sh | ba
 pi install npm:@j3pf/piquota
 ```
 
-Loads both Pi extensions straight from the package. The quota panel resolves
+Loads the Pi extension straight from the package. The quota panel resolves
 the CLI from inside the package, so nothing else is required to see quotas in
 the TUI.
 
 | Capability | `pi install npm:` | `install.sh` |
 | --- | --- | --- |
 | TUI panel, sidebar and `/quota` | yes | yes |
-| Omarchy bar records | yes, written on every refresh | yes |
+| Omarchy bar records | yes, written on refresh when Omarchy is present | yes |
 | `piquota` on your `PATH` for terminal use | no | yes, symlinked |
 | Omarchy sync while Pi is closed | no | yes, with `--omarchy-timer` |
 
-If you live inside Pi and use Omarchy, the npm route covers it: the extension
-runs `piquota omarchy` on every quota refresh, so the bar fills without any
-setup. Choose `install.sh` when you want the CLI in a terminal, or background
-sync while Pi is not running.
+If you live inside Pi and use Omarchy, the npm route covers it: when an Omarchy
+directory is present, the extension runs `piquota omarchy` on quota refreshes so
+the bar fills without extra setup. Choose `install.sh` when you want the CLI in a
+terminal, or background sync while Pi is not running.
 
 ### Manual Install / Development
 
@@ -243,8 +242,8 @@ the numbers are not shown twice. See [the rail slot](#the-gentle-pi-rail-slot).
   shape (`○` plenty left → `◔` → `◕` → `●` nearly spent), so it still reads on a
   colourblind or mono terminal;
 * **only active providers are shown:** if you only have Claude and Codex configured
-  in Pi, only Claude and Codex appear in the line and on Moshi (no empty warning
-  icons for providers you don't use);
+  in Pi, only Claude and Codex appear in the line (no empty warning icons for
+  providers you don't use);
 * `NO_COLOR` / `TERM=dumb` drops the colours and keeps the glyphs;
 * the window shown is the **shortest** one (5h first), and `/quota` expands every
   window with a used-fraction bar and the reset countdown.
@@ -292,10 +291,11 @@ const sections = ["footer", "agents", "todo", "quota"].map((key) => { /* ... */ 
 * `piquota gentle-pi apply` — append the part (idempotent);
 * `piquota gentle-pi revert` — remove the part and restore the original bytes.
 
-Because a gentle-pi update replaces the package, the patch would otherwise vanish.
-The extension therefore **validates the slot on every session start** and re-applies
-it when it is gone, reporting the repair instead of doing it silently. `install.sh`
-applies it at install time and reverts it on `--uninstall`.
+Because a gentle-pi update replaces the package, the patch may vanish on upgrade.
+The extension therefore **inspects the slot on session start** and falls back to
+a non-destructive runtime footer-chaining hook when the layout is unpatched, so
+the rail card continues to render without modifying package files at runtime.
+`install.sh` applies the slot at install time and reverts it on `--uninstall`.
 
 Safety properties, all covered by `tests/rail-patch.test.mjs`:
 
@@ -371,22 +371,21 @@ Rp suite) without external network daemons or closed-source intermediaries:
 }
 ```
 
-### Each provider refreshes on its own clock
+### Caching, backoff and sticky resilience
 
-Anthropic's usage endpoint answers `429` when polled every minute; Codex,
+Anthropic's usage endpoint answers `429` when polled aggressively, whereas Codex,
 Antigravity and OpenCode Go tolerate 60 s intervals. To prevent cards from looking
 stale without triggering rate limits:
 
-| Family | Clock |
-| --- | --- |
-| Claude | **300 s** (`--claude-ttl`) |
-| Codex, Antigravity, OpenCode Go | **60 s** (`--fetch-ttl`) |
-
-`src/refresh.js` keeps a timestamp per family, requests only what is past its own
-clock, and merges the result back into the canonical report. `src/sticky.js`
-keeps the last healthy snapshot during transient upstream 429 throttles so the
-user never loses visibility. Permanent failures (expired sign-in, missing
-credential) are never masked.
+* `src/cache.js` caches the full report at `~/.cache/pi-quota/usage.json` (default
+  60 s TTL, configurable via `--ttl`), while the Pi TUI extension polls every
+  300 s when idle and debounces refreshes after `agent_end`.
+* `src/providers/backoff.js` records per-family `429` throttle windows in
+  `~/.cache/pi-quota/backoff.json` and honours `Retry-After` headers.
+* `src/sticky.js` keeps the last healthy snapshot in `~/.cache/pi-quota/last-good.json`
+  during transient upstream `429` throttles or `5xx` / network blips so the user
+  never loses visibility. Permanent failures (expired sign-in, missing credential)
+  are never masked.
 
 ## Omarchy integration
 
@@ -426,14 +425,13 @@ src/providers/*.js             one file per provider; each degrades instead of t
 src/providers/github-actions.js  plan-derived org Actions minutes via authenticated gh CLI
 src/providers/antigravity-oauth.js  in-memory refresh with Google's public client
 src/providers/backoff.js       per-family throttle state
-src/sticky.js                  last published / last good snapshots and throttle recovery
+src/sticky.js                  last-good snapshots and transient/throttle recovery
 src/engine.js                  collectQuota() -> one normalized report
 src/model.js                   window normalization, percent and reset parsing
 src/render/{theme,panel}.js    colors, thresholds, rings, bars, boxed panel
 src/cache.js                   report cache at ~/.cache/pi-quota/usage.json
 src/omarchy/record.js          pure mapping from the report to Omarchy usage records
 src/omarchy/publish.js         atomic writer for pi-*.json, and stale-record cleanup
-src/refresh.js                 per-family refresh clocks, and the merge back into one report
 src/cli/args.js                argument parsing, and the flag/positional split
 src/exec.js                    the one place that spawns gh CLI binary
 src/http.js                    fetch wrapper: timeouts, JSON, redaction
@@ -461,7 +459,7 @@ extensions/quota-panel.ts      Pi TUI line and /quota
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 248 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 237 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store
@@ -469,11 +467,11 @@ Modules covered: `auth.json` parsing and de-duplication, the Claude Code store
 byte-identical), Claude source precedence, the five providers (including GitHub
 Actions plan resolution, opt-in gating and degradation, the two Antigravity
 failures and the OpenCode degradation), the dashboard parser's three
-strategies, the Firefox cookie reader against a synthetic SQLite database, the
-Antigravity refresh (in-memory only), sticky and last-good snapshots resilience,
-the Omarchy record mapping and atomic writer, the renderers, the Pi
-extension contract, the per-family refresh clocks, argument parsing, and the
-structure of these documents themselves (tables, fences, links, anchors).
+strategies, the Firefox and Linux Chromium cookie readers against synthetic SQLite
+databases, the Antigravity refresh (in-memory only), sticky and last-good snapshots
+resilience, the Omarchy record mapping and atomic writer, the renderers, the Pi
+extension contract, argument parsing, and the structure of these documents
+themselves (tables, fences, links, anchors).
 
 ## Acknowledgments & Prior Art
 

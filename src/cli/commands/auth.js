@@ -2,7 +2,7 @@
  * Auth subcommands: OpenCode session capture and credential status inspection.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 import { describeStore, resolveAuthPaths } from "../../auth/pi-auth.js";
@@ -25,6 +25,17 @@ const WINDOWS_FIREFOX = [
   "/mnt/c/Program Files (x86)/Mozilla Firefox/firefox.exe",
 ];
 
+function spawnDetached(command, args) {
+  try {
+    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    child.on("error", () => {});
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Launch Firefox at the login URL. Returns how it was launched.
  *
@@ -34,18 +45,20 @@ const WINDOWS_FIREFOX = [
 export function openLogin(url) {
   for (const candidate of WINDOWS_FIREFOX) {
     if (!existsSync(candidate)) continue;
-    const result = spawnSync(candidate, [url], { stdio: "ignore", detached: true });
-    if (!result.error) return { launched: true, via: `Windows Firefox (${candidate})` };
+    if (spawnDetached(candidate, [url])) return { launched: true, via: `Windows Firefox (${candidate})` };
   }
   if (process.platform === "darwin" || existsSync("/Applications/Firefox.app")) {
-    const launched = spawnSync("open", ["-a", "Firefox", url], { stdio: "ignore", detached: true });
+    const launched = spawnSync("open", ["-a", "Firefox", url], { stdio: "ignore", detached: true, timeout: 5000 });
     if (!launched.error && launched.status === 0) return { launched: true, via: "macOS Firefox (open -a Firefox)" };
   }
   for (const command of ["firefox", "firefox-esr", "firefox-bin"]) {
-    const result = spawnSync("which", [command], { encoding: "utf-8" });
+    const result = spawnSync("which", [command], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3000,
+    });
     if (result.status !== 0) continue;
-    const launched = spawnSync(command, [url], { stdio: "ignore", detached: true });
-    if (!launched.error) return { launched: true, via: `Firefox (${command})` };
+    if (spawnDetached(command, [url])) return { launched: true, via: `Firefox (${command})` };
   }
   return { launched: false, via: "none", error: "no Firefox binary found" };
 }
@@ -129,10 +142,10 @@ export async function authOpenCode(argv) {
     out(`  a session is already available via ${before.origin} (${before.detail})`);
   }
 
-  const readableFirefox = stores.filter((store) => store.browser === "firefox" && store.readability === "plaintext");
-  if (readableFirefox.length === 0) {
+  const readableStores = stores.filter((store) => store.readability === "plaintext");
+  if (readableStores.length === 0) {
     err("");
-    err("No readable Firefox cookie store found. Log in with Firefox, or paste the cookie:");
+    err("No readable browser cookie store found. Log in with Firefox or Linux Chromium, or paste the cookie:");
     err("  piquota auth opencode --paste   (get `auth` for opencode.ai from your browser devtools)");
     return 2;
   }
@@ -143,7 +156,7 @@ export async function authOpenCode(argv) {
     out(opened.launched ? `  opened ${OPENCODE_LOGIN_URL} in ${opened.via}` : `  could not launch a browser (${opened.error})`);
     if (!opened.launched) out(`  open manually: ${OPENCODE_LOGIN_URL}`);
   } else {
-    out(`  open this URL in Firefox: ${OPENCODE_LOGIN_URL}`);
+    out(`  open this URL in your browser: ${OPENCODE_LOGIN_URL}`);
   }
   out("  log in with GitHub, Google or Apple, then click Authorize on the consent screen.");
   out(`  Waiting up to ${waitSeconds}s for the session...`);
@@ -153,7 +166,7 @@ export async function authOpenCode(argv) {
   while (Date.now() < deadline) {
     await sleep(3);
     for (const name of OPENCODE_COOKIE_NAMES) {
-      const hit = findCookie({ host: "opencode.ai", name, stores: readableFirefox });
+      const hit = findCookie({ host: "opencode.ai", name, stores: readableStores });
       if (hit.found && hit.value) {
         found = hit;
         break;
@@ -165,16 +178,16 @@ export async function authOpenCode(argv) {
   if (!found) {
     err("");
     err(`No "${OPENCODE_COOKIE_NAME}" cookie for opencode.ai appeared within ${waitSeconds}s.`);
-    err("Check that you completed the login in Firefox, then re-run this command.");
+    err("Check that you completed the login in your browser, then re-run this command.");
     return 1;
   }
 
   out(`  session captured from ${found.store?.browser} ${found.store?.profile}`);
   out("  the cookie is read live from the browser store; it is not copied anywhere");
-  const code = await verifyGoPlan({ stores: readableFirefox });
+  const code = await verifyGoPlan({ stores: readableStores });
   if (code !== 0) {
     out("");
-    out("If the workspace id could not be found, open https://opencode.ai/ once in Firefox");
+    out("If the workspace id could not be found, open https://opencode.ai/ once in your browser");
     out("(the app lands on /workspace/<id>), then run: piquota auth opencode");
   }
   return code;

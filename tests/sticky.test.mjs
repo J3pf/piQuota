@@ -10,10 +10,7 @@ import test from "node:test";
 
 import {
   isTransientError,
-  loadLastPublished,
   mergeLastGood,
-  mergeSticky,
-  saveLastPublished,
 } from "../src/sticky.js";
 
 const NOW = "2026-09-12T16:50:46.123Z";
@@ -70,52 +67,22 @@ function report(providers) {
   };
 }
 
-test("a transient upstream failure keeps the previous snapshot on the card", () => {
+test("isTransientError distinguishes transient network/throttle failures from permanent ones", () => {
   assert.equal(isTransientError("Claude usage request failed: rate limited (HTTP 429); retry in 30s"), true);
+  assert.equal(isTransientError("Claude usage request failed: rate limited (HTTP 429); retry in 401s"), true);
   assert.equal(isTransientError("Claude usage request failed: HTTP 503"), true);
   assert.equal(isTransientError("request timed out"), true);
+  assert.equal(isTransientError("timed out after 15401ms"), true);
   // The backoff layer's own message must be treated as transient, otherwise the
   // last-good restore refuses to act precisely while a provider is throttled.
   assert.equal(isTransientError("backing off after a throttle: next attempt in 231s"), true);
+  assert.equal(isTransientError("backing off after a throttle: next attempt in 401s"), true);
   assert.equal(isTransientError("throttled upstream; pausing that family for 300s"), true);
+  assert.equal(isTransientError("Claude usage request failed: HTTP 400: bad request"), false);
+  assert.equal(isTransientError("Claude usage request failed: response was not valid JSON"), false);
   assert.equal(isTransientError("Claude token rejected; run /login"), false);
   assert.equal(isTransientError("no claude credential in the Pi store"), false);
   assert.equal(isTransientError(null), false);
-
-  const healthy = provider({ family: "claude", label: "Claude (Pi)" });
-  const previous = { ...report([healthy]), byFamily: { claude: [healthy] } };
-  const degraded = provider({ family: "claude", label: "Claude (Pi)", ok: false, windows: [], error: "rate limited (HTTP 429); retry in 30s" });
-  const throttled = { ...report([degraded]), byFamily: { claude: [degraded] } };
-
-  const merged = mergeSticky(previous, throttled);
-  assert.deepEqual(merged.reused, ["claude"]);
-  assert.equal(merged.report.providers[0].ok, true);
-  assert.equal(merged.report.providers[0].windows.length, 2);
-  assert.match(merged.report.warnings.join(" "), /reused the previous snapshot for: claude/);
-
-  // A permanent failure is NOT masked.
-  const expiredResult = provider({ family: "claude", label: "Claude (Pi)", ok: false, windows: [], error: "Claude token rejected; run /login" });
-  const expired = { ...report([expiredResult]), byFamily: { claude: [expiredResult] } };
-  const notMasked = mergeSticky(previous, expired);
-  assert.deepEqual(notMasked.reused, []);
-  assert.equal(notMasked.report.providers[0].ok, false);
-});
-
-test("mergeSticky is a no-op without a previous report", () => {
-  const fresh = report([provider()]);
-  assert.equal(mergeSticky(null, fresh).report, fresh);
-});
-
-test("the last published report survives a restart so a 429 cannot drop a card", () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-quota-last-"));
-  const path = join(dir, "last-published.json");
-
-  assert.equal(loadLastPublished({ path }), null);
-  assert.equal(saveLastPublished(report([provider()]), { path }).ok, true);
-  const restored = loadLastPublished({ path });
-  assert.equal(restored.providers.length, 1);
-  assert.equal(restored.providers[0].family, "codex");
-  assert.equal(restored.providers[0].windows.length, 2);
 });
 
 test("a throttled family keeps showing its last known real values", () => {
@@ -155,7 +122,7 @@ test("a throttled family keeps showing its last known real values", () => {
   assert.match(fourth.report.warnings.join(" "), /discarded last known values because they are stale/);
 });
 
-test("an expired credential (expiresInMin <= 0) is never masked by mergeLastGood or mergeSticky", () => {
+test("an expired credential (expiresInMin <= 0) is never masked by mergeLastGood", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-quota-expired-"));
   const path = join(dir, "last-good.json");
   const NOW = 1_800_000_000_000;
@@ -174,11 +141,6 @@ test("an expired credential (expiresInMin <= 0) is never masked by mergeLastGood
     error: "backing off after a throttle: next attempt in 120s",
   });
   const current = { ...report([expiredBackingOff]), byFamily: { claude: [expiredBackingOff] } };
-
-  // Neither mergeSticky nor mergeLastGood should restore old data when the token is expired
-  const stickyResult = mergeSticky(previous, current, { now: NOW + 60_000 });
-  assert.deepEqual(stickyResult.reused, []);
-  assert.equal(stickyResult.report.providers[0].ok, false);
 
   const lastGoodResult = mergeLastGood(current, { path, now: NOW + 60_000 });
   assert.deepEqual(lastGoodResult.restored, []);
@@ -221,9 +183,6 @@ test("carrying a snapshot never reorders the providers", () => {
     ...report([throttled, codex, opencode]),
     byFamily: { "opencode-go": [opencode], claude: [throttled], codex: [codex] },
   };
-
-  const viaSticky = mergeSticky(ordered, next);
-  assert.deepEqual(viaSticky.report.providers.map((p) => p.family), ["claude", "codex", "opencode-go"]);
 
   const viaLastGood = mergeLastGood(next, { path: join(dir, "last-good.json"), now: NOW + 60_000 });
   assert.deepEqual(viaLastGood.report.providers.map((p) => p.family), ["claude", "codex", "opencode-go"]);

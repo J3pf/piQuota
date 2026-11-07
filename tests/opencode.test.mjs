@@ -481,3 +481,42 @@ test("config paths keep the pi-quota folder under XDG_CONFIG_HOME", () => {
   // The unset-variable default is unchanged.
   assert.equal(configPaths({ home, env: {} }).path, join(home, ".config", "pi-quota", "opencode-cookie"));
 });
+
+test("decryptLinuxChromiumCookie strips Chromium 130+ SHA-256 domain digest prefix on v10 and v11 cookies", async () => {
+  const { createHash, createCipheriv, pbkdf2Sync } = await import("node:crypto");
+  const { decryptLinuxChromiumCookie } = await import("../src/browser/cookies.js");
+  const host = ".opencode.ai";
+  const digest = createHash("sha256").update(host).digest();
+  const key = pbkdf2Sync("peanuts", "saltysalt", 1, 16, "sha1");
+  const cipher = createCipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
+  const payload = Buffer.concat([digest, Buffer.from("Fe26.2*1*v10-chromium130-cookie", "utf8")]);
+  const encrypted = Buffer.concat([Buffer.from("v10", "ascii"), cipher.update(payload), cipher.final()]);
+
+  assert.equal(decryptLinuxChromiumCookie(encrypted, { host }), "Fe26.2*1*v10-chromium130-cookie");
+  assert.equal(decryptLinuxChromiumCookie(encrypted), "Fe26.2*1*v10-chromium130-cookie");
+});
+
+test("readGoPlan sends already-formatted Cookie header without double-prefixing auth= on SSR fallback", async () => {
+  const { readGoPlan } = await import("../src/opencode/session.js");
+  const seenCookieHeaders = [];
+  const plan = await readGoPlan({
+    now: NOW,
+    workspaceId: "wrk_01KMVG97729BBA9V3RYD6B5N5T",
+    cookie: "__Host-console_session=sess_1; auth=Fe26.2*1*abc",
+    fetchFn: async (url, init) => {
+      seenCookieHeaders.push({ url: String(url), cookie: init?.headers?.Cookie });
+      if (String(url).includes("/console/api/")) {
+        return new Response("not found", { status: 404 });
+      }
+      return new Response(
+        `<div data-slot="usage-item"><span data-slot="usage-label">5-hour Usage</span>
+         <span data-slot="usage-value">15%</span><span data-slot="reset-time">Resets in 2 hours</span></div>`,
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+    },
+  });
+  assert.equal(plan.ok, true);
+  const ssrCall = seenCookieHeaders.find((entry) => entry.url.endsWith("/go"));
+  assert.ok(ssrCall);
+  assert.equal(ssrCall.cookie, "__Host-console_session=sess_1; auth=Fe26.2*1*abc");
+});
