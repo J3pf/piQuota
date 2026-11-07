@@ -15,6 +15,8 @@ import { fetchQuota as fetchClaude } from "./providers/claude.js";
 import { fetchQuota as fetchCodex } from "./providers/codex.js";
 import { fetchQuota as fetchAntigravity } from "./providers/antigravity.js";
 import { fetchQuota as fetchOpenCodeGo } from "./providers/opencode-go.js";
+import { fetchQuota as fetchCopilot } from "./providers/copilot.js";
+import { fetchQuota as fetchOpenRouter } from "./providers/openrouter.js";
 import { fetchQuota as fetchGithubActions } from "./providers/github-actions.js";
 
 /** Canonical family order used by every surface. */
@@ -134,6 +136,8 @@ const PROVIDERS = {
   codex: fetchCodex,
   antigravity: fetchAntigravity,
   "opencode-go": fetchOpenCodeGo,
+  copilot: fetchCopilot,
+  openrouter: fetchOpenRouter,
   "github-actions": fetchGithubActions,
 };
 
@@ -182,6 +186,18 @@ export async function collectQuota(options = {}) {
     usersRoot: options.usersRoot,
     paths: options.paths,
   });
+
+  if (!options.families) {
+    for (const extraFamily of ["copilot", "openrouter"]) {
+      const hasCredential = loaded.credentials.some((credential) => credential.family === extraFamily);
+      const envEnabled =
+        (extraFamily === "copilot" && isTruthyFlag(env.PI_QUOTA_COPILOT)) ||
+        (extraFamily === "openrouter" && isTruthyFlag(env.PI_QUOTA_OPENROUTER));
+      if ((hasCredential || envEnabled) && !families.includes(extraFamily)) {
+        families.push(extraFamily);
+      }
+    }
+  }
 
   // Claude is the one family with a second, non-Pi source, so it is resolved
   // before the per-family loop and then treated exactly like any other credential.
@@ -250,7 +266,8 @@ export async function collectQuota(options = {}) {
       // family is already known to be expired, waiting out a rate limit is useless
       // and misleading. We clear backoff immediately so the auth failure surfaces.
       const isRefreshable = (credential) =>
-        family === "antigravity" && Boolean(credential.refresh) && options.refresh !== false;
+        (family === "antigravity" && Boolean(credential.refresh) && options.refresh !== false) ||
+        (family === "copilot" && Boolean(credential.refresh));
       const hasExpiredToken = credentials.some((credential) => {
         if (isRefreshable(credential)) return false;
         const freshness = checkFreshness(credential, now);

@@ -93,10 +93,39 @@ test("collectQuota provides actionable diagnosis when Pi store has openai API in
   assert.match(report.providers[0].error ?? "", /found 'openai' API; run \/login openai-codex in Pi/);
 
   writeFileSync(authPath, JSON.stringify({
-    openai: { type: "oauth", access: "fake-access", clientId: "dyn-1", scopes: ["chatgpt.tokens.use.direct"] }
+    openai: { type: "oauth", access: "fake-access", clientId: "dyn-1", scopes: ["chatgpt.tokens.use.direct"] },
+    "github-copilot": { type: "oauth", refresh: "ghu_FAKE_TOKEN", access: "tid=1" },
+    openrouter: { type: "api_key", key: "sk-or-fake" },
   }));
-  const chatGptReport = await collectQuota({ paths: [authPath], claudeCodePaths: [], now: NOW, families: ["codex"], env: {}, stores: [], allowBrowser: false });
-  assert.match(chatGptReport.providers[0].error ?? "", /Sign in with ChatGPT OAuth without wham\/usage claims/);
+  const { fetchFn } = routedFetch([
+    [
+      "api.github.com/copilot_internal/user",
+      () =>
+        jsonResponse({
+          copilot_plan: "individual_pro",
+          quota_reset_date: "2028-02-01T00:00:00.000Z",
+          quota_snapshots: {
+            premium_interactions: { entitlement: 300, remaining: 210, percent_remaining: 70 },
+          },
+        }),
+    ],
+    [
+      "openrouter.ai/api/v1/key",
+      () =>
+        jsonResponse({
+          data: { label: "or-main", limit: 20, limit_remaining: 15, usage: 5, is_free_tier: false },
+        }),
+    ],
+  ]);
+  const chatGptReport = await collectQuota({ paths: [authPath], claudeCodePaths: [], now: NOW, fetchFn, env: {}, stores: [], allowBrowser: false });
+  const codexEntry = chatGptReport.providers.find((p) => p.family === "codex");
+  assert.match(codexEntry?.error ?? "", /Sign in with ChatGPT OAuth without wham\/usage claims/);
+  const copilotEntry = chatGptReport.providers.find((p) => p.family === "copilot");
+  assert.equal(copilotEntry?.ok, true, "auto-discovers github-copilot from auth.json");
+  assert.equal(copilotEntry?.windows[0]?.usedPercent, 30);
+  const openrouterEntry = chatGptReport.providers.find((p) => p.family === "openrouter");
+  assert.equal(openrouterEntry?.ok, true, "auto-discovers openrouter from auth.json");
+  assert.equal(openrouterEntry?.windows[0]?.usedPercent, 25);
 });
 
 test("a crashing provider degrades instead of taking the report down", async () => {

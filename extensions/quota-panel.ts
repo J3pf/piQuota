@@ -86,6 +86,7 @@ type Theme = {
 /** Only the UI surface this extension uses. */
 type UiContext = {
   hasUI: boolean;
+  model?: { provider?: string; id?: string } | null;
   ui: {
     theme: Theme;
     setStatus: (key: string, value: string | undefined) => void;
@@ -100,6 +101,8 @@ const BRAND: Record<string, string> = {
   codex: "#10A37F",
   antigravity: "#4285F4",
   "opencode-go": "#007AFF",
+  copilot: "#8957E5",
+  openrouter: "#6366F1",
   "github-actions": "#2088FF",
 };
 
@@ -109,8 +112,29 @@ const SHORT_NAME: Record<string, string> = {
   codex: "Codex",
   antigravity: "Agy",
   "opencode-go": "OP-Go",
+  copilot: "Copilot",
+  openrouter: "OpenRtr",
   "github-actions": "GH",
 };
+
+/**
+ * Map a Pi session model object onto the normalized quota family it consumes.
+ */
+export function resolveActiveFamily(model: { provider?: string; id?: string } | null | undefined): string | null {
+  if (!model || typeof model !== "object") return null;
+  const provider = String(model.provider ?? "").toLowerCase();
+  const id = String(model.id ?? "").toLowerCase();
+  if (provider === "anthropic" || provider === "claude" || provider === "claude-code") return "claude";
+  if (provider === "openai-codex" || provider === "codex" || provider === "openai") return "codex";
+  if (provider === "antigravity" || provider === "google") return "antigravity";
+  if (provider === "opencode-go" || provider === "opencode") return "opencode-go";
+  if (provider === "github-copilot" || provider === "copilot") return "copilot";
+  if (provider === "openrouter") return "openrouter";
+  if (/claude/.test(id)) return "claude";
+  if (/gpt|codex|^o[134]/.test(id)) return "codex";
+  if (/gemini/.test(id)) return "antigravity";
+  return null;
+}
 
 /** Semaphore bands, expressed in *used* percent. */
 const BANDS = [
@@ -299,11 +323,18 @@ function errorCaption(error: string | null | undefined): string {
  *
  *   Claude:○ 0%   Codex:○ 8%   Agy:○ 4%   Agy C/G:○ 4%   OP-Go:○ 3%
  */
-function renderLine(report: QuotaReport, theme: Theme): string {
+export function renderLine(report: QuotaReport, theme: Theme, activeFamily: string | null = null): string {
   // Only display providers that are configured in Pi.
   // A provider that is simply not configured does not belong in the editor line.
   const active = report.providers.filter((provider) => provider.notConfigured !== true);
   if (active.length === 0) return theme.fg("dim", "quota: no providers configured in Pi");
+
+  const ordered = activeFamily
+    ? [
+        ...active.filter((provider) => provider.family === activeFamily),
+        ...active.filter((provider) => provider.family !== activeFamily),
+      ]
+    : active;
 
   const renderToken = (
     provider: QuotaProvider,
@@ -312,7 +343,9 @@ function renderLine(report: QuotaReport, theme: Theme): string {
     color = BRAND[provider.family] ?? "#8B949E",
     windowTag: "7d" | null = null,
   ): string => {
-    const name = paint(color, `${label}:`);
+    const isCurrent = Boolean(activeFamily && provider.family === activeFamily);
+    const prefix = isCurrent ? "▸" : "";
+    const name = paint(color, `${prefix}${label}:`);
     if (!provider.ok) {
       const kind = errorKind(provider.error);
       const glyph = errorGlyph(provider.error);
@@ -324,10 +357,11 @@ function renderLine(report: QuotaReport, theme: Theme): string {
     if (used === null) return `${name}${theme.fg("dim", "?")}`;
 
     const band = bandFor(used);
+    const pace = isHotPace(window, used) ? paint("#E0AF68", "↑") : "";
     const tag = windowTag ? ` ${theme.fg("dim", `(${windowTag})`)}` : "";
-    return `${name}${paint(band.color, band.glyph)} ${paint(band.color, `${Math.round(used)}%`)}${tag}`;
+    return `${name}${paint(band.color, band.glyph)} ${paint(band.color, `${Math.round(used)}%`)}${pace}${tag}`;
   };
-  const tokens = active.flatMap((provider) => {
+  const tokens = ordered.flatMap((provider) => {
     if (provider.family !== "antigravity") {
       if (provider.family === "github-actions") {
         return [renderToken(provider, SHORT_NAME[provider.family] ?? provider.family, headline(provider))];
@@ -406,6 +440,24 @@ function isWeekly(window: QuotaWindow): boolean {
   );
 }
 
+function inferWindowSeconds(window: QuotaWindow | null): number | null {
+  if (!window) return null;
+  if (typeof window.windowSeconds === "number" && window.windowSeconds > 0) return window.windowSeconds;
+  if (isFiveHour(window)) return 5 * 3600;
+  if (isWeekly(window)) return 7 * 86_400;
+  if (window.id === "monthly" || /month|30d|30-day/i.test(`${window.id} ${window.label}`)) return 30 * 86_400;
+  return null;
+}
+
+export function isHotPace(window: QuotaWindow | null, usedPercent: number | null): boolean {
+  if (!window || usedPercent === null || usedPercent < 25 || usedPercent >= 100) return false;
+  const totalSec = inferWindowSeconds(window);
+  const resetsInSec = window.resetsInSec;
+  if (!totalSec || typeof resetsInSec !== "number" || resetsInSec <= 0 || resetsInSec >= totalSec) return false;
+  const elapsedPercent = ((totalSec - resetsInSec) / totalSec) * 100;
+  return usedPercent - elapsedPercent >= 20;
+}
+
 /**
  * Pick the active quota window for a compact row/token.
  *
@@ -430,7 +482,7 @@ function selectActiveWindow(
   ) {
     return { provider, window: weekly, windowTag: "7d" };
   }
-  return { provider, window: fiveHour, windowTag: null };
+  return { provider, window: fiveHour ?? provider?.windows[0] ?? null, windowTag: null };
 }
 
 /** Compact five-row quota widget aligned to the right edge of the editor. */
@@ -464,6 +516,12 @@ export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number
     },
     { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go") },
   ];
+  if (providerFor("copilot")) {
+    allRows.push({ label: "Copilot:", color: "#8957E5", ...windowFor("copilot") });
+  }
+  if (providerFor("openrouter")) {
+    allRows.push({ label: "OpenRtr:", color: "#6366F1", ...windowFor("openrouter") });
+  }
   const ghProvider = providerFor("github-actions");
   if (ghProvider) {
     allRows.push({
@@ -486,8 +544,9 @@ export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number
     let mid = theme.fg("dim", "? n/a");
     if (used !== null) {
       const band = bandFor(used);
+      const pace = isHotPace(window, used) ? paint("#E0AF68", "↑") : "";
       const tag = windowTag ? ` ${theme.fg("dim", windowTag)}` : "";
-      mid = `${paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`)}${tag}`;
+      mid = `${paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`)}${pace}${tag}`;
     }
     const effectiveResetsInSec =
       window?.resetsInSec ??
@@ -547,6 +606,12 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
           ),
         },
         { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go") },
+        ...(providerFor("copilot")
+          ? [{ label: "Copilot:", color: "#8957E5", ...windowFor("copilot") }]
+          : []),
+        ...(providerFor("openrouter")
+          ? [{ label: "OpenRtr:", color: "#6366F1", ...windowFor("openrouter") }]
+          : []),
         ...(ghProvider
           ? [
               {
@@ -573,6 +638,7 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
         if (used === null) return { left: `${name} ? n/a`, right: "" };
         const band = bandFor(used);
         const indicator = showingLastKnownValues ? `${theme.fg("warning", "~")} ` : "";
+        const pace = isHotPace(window, used) ? paint("#E0AF68", "↑") : "";
         const tag = windowTag ? ` ${theme.fg("dim", windowTag)}` : "";
         const effectiveResetsInSec =
           window?.resetsInSec ??
@@ -580,7 +646,7 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
             ? window.windowSeconds
             : null);
         return {
-          left: `${name} ${indicator}${paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`)}${tag}`,
+          left: `${name} ${indicator}${paint(band.color, `${band.glyph} ${`${Math.round(used)}%`.padStart(4)}`)}${pace}${tag}`,
           right: `${theme.fg("dim", "R:")}${paint("#E0AF68", humanDuration(effectiveResetsInSec))}`,
         };
       })
@@ -743,9 +809,10 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
   function paintUi(ctx: UiContext): void {
     if (disposed) return;
     const theme = ctx.ui.theme;
+    const activeFamily = resolveActiveFamily(ctx.model);
 
     if (statusVisible) {
-      ctx.ui.setStatus(STATUS_KEY, report ? renderLine(report, theme) : theme.fg("dim", "quota …"));
+      ctx.ui.setStatus(STATUS_KEY, report ? renderLine(report, theme, activeFamily) : theme.fg("dim", "quota …"));
     } else {
       ctx.ui.setStatus(STATUS_KEY, undefined);
     }
@@ -899,10 +966,10 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
             // or when the terminal is narrow (< 100), collapse to a single line like gentle-pi's other
             // components do, unless the user explicitly requested the box with `/quota box`.
             if ((liveState !== undefined || w < 100) && !explicitBox) {
-              return [renderLine(report, activeTheme)];
+              return [renderLine(report, activeTheme, activeFamily)];
             }
             if (boxVisible) return renderBox(report, activeTheme, w);
-            if (lineVisible) return [renderLine(report, activeTheme)];
+            if (lineVisible) return [renderLine(report, activeTheme, activeFamily)];
             return [];
           },
           dispose: () => {

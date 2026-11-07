@@ -288,6 +288,17 @@ test("the box widget borders and content align to the exact same visible width",
     }),
   ], plainPaint, 0).join("\n");
   assert.match(weeklyBottleneck, /Codex:\s+◔\s+78%\s+7d\s+R:2d 5h/, "promotes 7d window with explicit 7d tag when weekly usage >= 60% and exceeds 5h");
+
+  const hotPaceBox = renderBoxWidget([
+    providerFixture({
+      family: "codex",
+      label: "Codex (Pi)",
+      windows: [
+        windowFixture({ id: "5h", label: "5h window", usedPercent: 55, remainingPercent: 45, resetsInSec: 4 * 3600 }),
+      ],
+    }),
+  ], plainPaint, 0).join("\n");
+  assert.match(hotPaceBox, /Codex:\s+◑\s+55%↑\s+R:4h 0m/, "appends ↑ burn-rate indicator when consumption runs >= 20% ahead of elapsed window time");
 });
 
 test("model defensive parsing: booleans, arrays, reset seconds, and phantom quota guards", () => {

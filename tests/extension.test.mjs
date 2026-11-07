@@ -327,6 +327,39 @@ test("an inactive rail collapses to the compact line by default and allows optin
       80,
     );
     assert.match(plain(boxBottleneck.join("\n")), /Codex:\s+●\s+82%\s+7d\s+R:2d 1h/, "renderBox promotes 7d window with 7d tag when weekly usage >= 60%");
+
+    assert.equal(module.resolveActiveFamily({ provider: "antigravity", id: "gemini-3.8-flash" }), "antigravity");
+    assert.equal(module.resolveActiveFamily({ provider: "openai-codex", id: "gpt-5" }), "codex");
+    const activeLine = plain(
+      module.renderLine(
+        {
+          generatedAt: "2030-01-01T00:00:00.000Z",
+          providers: [
+            {
+              family: "claude",
+              label: "Claude (Pi)",
+              account: "a",
+              plan: "pro",
+              ok: true,
+              error: null,
+              windows: [{ id: "5h", label: "5h", usedPercent: 10, remainingPercent: 90, resetsAt: null, resetsInSec: 3600 }],
+            },
+            {
+              family: "codex",
+              label: "Codex (Pi)",
+              account: "b",
+              plan: "plus",
+              ok: true,
+              error: null,
+              windows: [{ id: "5h", label: "5h", usedPercent: 55, remainingPercent: 45, resetsAt: null, resetsInSec: 4 * 3600 }],
+            },
+          ],
+        },
+        harness.ctx.ui.theme,
+        "codex",
+      ),
+    );
+    assert.match(activeLine, /^▸Codex:◕ 55%↑\s+Claude:○ 10%$/, "renderLine promotes active model family to the front with ▸ and ↑ pace arrow");
   }, { patched: true });
 });
 

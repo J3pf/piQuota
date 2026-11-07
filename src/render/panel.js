@@ -15,6 +15,8 @@ const FAMILY_SHORT = {
   codex: "X",
   antigravity: "A",
   "opencode-go": "G",
+  copilot: "CP",
+  openrouter: "OR",
   "github-actions": "GH",
 };
 
@@ -23,6 +25,8 @@ const FAMILY_TITLE = {
   codex: "Codex (Pi)",
   antigravity: "Antigravity (Pi)",
   "opencode-go": "OpenCode Go (Pi)",
+  copilot: "GitHub Copilot (Pi)",
+  openrouter: "OpenRouter (Pi)",
   "github-actions": "GitHub Actions",
 };
 
@@ -238,6 +242,39 @@ function renderWindow(window, paint, contentWidth) {
 }
 
 /**
+ * Estimate total window duration in seconds for pace (burn-rate) comparison.
+ *
+ * @param {import("../model.js").QuotaWindow | null} window
+ * @returns {number | null}
+ */
+function inferWindowSeconds(window) {
+  if (!window) return null;
+  if (typeof window.windowSeconds === "number" && window.windowSeconds > 0) return window.windowSeconds;
+  const text = `${window.id ?? ""} ${window.label ?? ""}`;
+  if (window.id === "5h" || /5h|session|hour/i.test(text)) return 5 * 3600;
+  if (window.id === "weekly" || /week|7d|7-day|seven/i.test(text)) return 7 * 86_400;
+  if (window.id === "monthly" || /month|30d|30-day/i.test(text)) return 30 * 86_400;
+  return null;
+}
+
+/**
+ * True when a quota window is burning significantly faster (>= 20 percentage
+ * points ahead) than linear elapsed time across its reset cycle.
+ *
+ * @param {import("../model.js").QuotaWindow | null} window
+ * @param {number | null} usedPercent
+ * @returns {boolean}
+ */
+export function isHotPace(window, usedPercent) {
+  if (!window || usedPercent === null || usedPercent < 25 || usedPercent >= 100) return false;
+  const totalSec = inferWindowSeconds(window);
+  const resetsInSec = window.resetsInSec;
+  if (!totalSec || typeof resetsInSec !== "number" || resetsInSec <= 0 || resetsInSec >= totalSec) return false;
+  const elapsedPercent = ((totalSec - resetsInSec) / totalSec) * 100;
+  return usedPercent - elapsedPercent >= 20;
+}
+
+/**
  * Compact five-row quota widget, aligned against the terminal's right edge.
  *
  * @param {import("../model.js").QuotaResult[]} providers
@@ -273,7 +310,7 @@ export function renderBoxWidget(providers, paint, totalWidth = typeof process?.s
     ) {
       return { provider, window: weekly, windowTag: "7d" };
     }
-    return { provider, window: fiveHour, windowTag: null };
+    return { provider, window: fiveHour ?? provider?.windows?.[0] ?? null, windowTag: null };
   };
   const allRows = [
     { label: "Claude: ", ...windowFor("claude") },
@@ -296,6 +333,12 @@ export function renderBoxWidget(providers, paint, totalWidth = typeof process?.s
     },
     { label: "OP-Go:  ", ...windowFor("opencode-go") },
   ];
+  if (providerFor("copilot")) {
+    allRows.push({ label: "Copilot:", ...windowFor("copilot") });
+  }
+  if (providerFor("openrouter")) {
+    allRows.push({ label: "OpenRtr:", ...windowFor("openrouter") });
+  }
   const ghProvider = providerFor("github-actions");
   if (ghProvider) {
     allRows.push({
@@ -319,8 +362,9 @@ export function renderBoxWidget(providers, paint, totalWidth = typeof process?.s
     if (used !== null) {
       const rem = Math.max(0, 100 - used);
       const key = thresholdKey(rem);
+      const pace = isHotPace(window, used) ? paint("warn", "↑") : "";
       const tag = windowTag ? ` ${paint("dim", windowTag)}` : "";
-      mid = `${paint(key, ringGlyph(rem))} ${paint(key, `${Math.round(used)}%`.padStart(4))}${tag}`;
+      mid = `${paint(key, ringGlyph(rem))} ${paint(key, `${Math.round(used)}%`.padStart(4))}${pace}${tag}`;
     }
     const effectiveResetsInSec =
       window?.resetsInSec ??

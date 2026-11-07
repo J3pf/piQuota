@@ -25,6 +25,9 @@ export const FAMILY_BY_PROVIDER = {
   anthropic: "claude",
   antigravity: "antigravity",
   "opencode-go": "opencode-go",
+  "github-copilot": "copilot",
+  copilot: "copilot",
+  openrouter: "openrouter",
 };
 
 /** Display label used by every surface (terminal, Pi TUI, JSON feed). */
@@ -33,6 +36,8 @@ export const LABEL_BY_FAMILY = {
   claude: "Claude (Pi)",
   antigravity: "Antigravity (Pi)",
   "opencode-go": "OpenCode Go (Pi)",
+  copilot: "GitHub Copilot (Pi)",
+  openrouter: "OpenRouter (Pi)",
   "github-actions": "GitHub Actions",
 };
 
