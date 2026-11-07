@@ -45,7 +45,7 @@ shuvquota, and it never writes to a credential file.
   | `~/.cache/pi-quota/usage.json` | the report cache |
   | `~/.cache/pi-quota/refresh-state.json` | each family's own refresh clock |
   | `~/.cache/pi-quota/last-published.json`, `last-good.json`, `backoff.json` | sticky snapshots and throttle state |
-  | `~/.config/pi-quota/opencode-cookie` | only after `piquota auth opencode`, mode `600` |
+  | `${XDG_CONFIG_HOME:-~/.config}/pi-quota/opencode-cookie` | only after `piquota auth opencode`, mode `600` |
   | `~/.pi/agent/extensions/*.ts` | only by `install.sh` |
 
 ## Status, verified against the live APIs
@@ -461,7 +461,7 @@ extensions/quota-panel.ts      Pi TUI line and /quota
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 247 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 248 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store

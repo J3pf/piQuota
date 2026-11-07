@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { createCipheriv, pbkdf2Sync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -457,4 +457,27 @@ test("label aliases accept the spellings the plan uses", () => {
     assert.equal(parsed.windows.length, 1, `label ${label}`);
     assert.equal(parsed.windows[0].id, expected, `label ${label}`);
   }
+});
+
+test("config paths keep the pi-quota folder under XDG_CONFIG_HOME", () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-xdg-"));
+  const config = join(home, "xdg-config");
+  const paths = configPaths({ home, env: { XDG_CONFIG_HOME: config } });
+
+  assert.equal(paths.path, join(config, "pi-quota", "opencode-cookie"));
+  assert.equal(paths.workspacePath, join(config, "pi-quota", "opencode-workspace"));
+
+  const written = writeSecretFile(paths.path, "cookie-under-xdg");
+  assert.equal(written.ok, true);
+  const resolved = resolveCookie({ home, env: { XDG_CONFIG_HOME: config }, stores: [], allowBrowser: false });
+  assert.equal(resolved.found, true);
+  assert.equal(resolved.origin, "config");
+  assert.equal(resolved.value, "cookie-under-xdg");
+
+  // Nothing may land loose in the shared config root.
+  assert.equal(existsSync(join(config, "opencode-cookie")), false);
+  assert.equal(existsSync(join(config, "opencode-workspace")), false);
+
+  // The unset-variable default is unchanged.
+  assert.equal(configPaths({ home, env: {} }).path, join(home, ".config", "pi-quota", "opencode-cookie"));
 });

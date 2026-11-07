@@ -33,7 +33,7 @@ const USER_AGENT =
  */
 export function configPaths(options = {}) {
   const env = options.env ?? process.env;
-  const base = env.XDG_CONFIG_HOME || join(options.home ?? homedir(), ".config", "pi-quota");
+  const base = join(env.XDG_CONFIG_HOME || join(options.home ?? homedir(), ".config"), "pi-quota");
   return {
     path: join(base, "opencode-cookie"),
     workspacePath: join(base, "opencode-workspace"),
