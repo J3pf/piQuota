@@ -266,9 +266,13 @@ test("the panel names the Claude store that was actually read", () => {
 
 test("the box widget borders and content align to the exact same visible width", () => {
   const plainPaint = (key, text) => text;
-  const lines = renderBoxWidget([providerFixture()], plainPaint, 0);
+  const lines = renderBoxWidget([
+    providerFixture(),
+    providerFixture({ family: "claude", label: "Claude (Pi)", notConfigured: true, ok: false, windows: [], error: "no claude credential" }),
+  ], plainPaint, 0);
   const lengths = lines.map(visibleLength);
-  assert.equal(lengths.length > 2, true);
+  assert.equal(lengths.length, 3, "unconfigured providers are omitted from the box when at least one provider is configured");
+  assert.equal(lines.join("\n").includes("Claude"), false);
   for (let i = 1; i < lengths.length; i++) {
     assert.equal(lengths[i], lengths[0], `line ${i} width matches top border width`);
   }

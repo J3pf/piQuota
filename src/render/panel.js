@@ -260,7 +260,7 @@ export function renderBoxWidget(providers, paint, totalWidth = typeof process?.s
     if (typeof win.remainingPercent === "number" && Number.isFinite(win.remainingPercent)) return 100 - win.remainingPercent;
     return null;
   };
-  const rows = [
+  const allRows = [
     { label: "Claude: ", ...windowFor("claude") },
     { label: "Codex:  ", ...windowFor("codex") },
     { label: "Agy:    ", ...windowFor("antigravity", (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window))) },
@@ -268,8 +268,10 @@ export function renderBoxWidget(providers, paint, totalWidth = typeof process?.s
     { label: "OP-Go:  ", ...windowFor("opencode-go") },
   ];
   if (providerFor("github-actions")) {
-    rows.push({ label: "GH Actions:", ...windowFor("github-actions", (window) => window.id === "monthly") });
+    allRows.push({ label: "GH Actions:", ...windowFor("github-actions", (window) => window.id === "monthly") });
   }
+  const configuredRows = allRows.filter(({ provider }) => Boolean(provider && provider.notConfigured !== true));
+  const rows = configuredRows.length > 0 ? configuredRows : allRows;
 
   const content = rows.map(({ label, provider, window }) => {
     const name = paint("bold", label);

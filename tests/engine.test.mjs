@@ -91,6 +91,12 @@ test("collectQuota provides actionable diagnosis when Pi store has openai API in
   assert.equal(report.providers[0].family, "codex");
   assert.equal(report.providers[0].notConfigured, true);
   assert.match(report.providers[0].error ?? "", /found 'openai' API; run \/login openai-codex in Pi/);
+
+  writeFileSync(authPath, JSON.stringify({
+    openai: { type: "oauth", access: "fake-access", clientId: "dyn-1", scopes: ["chatgpt.tokens.use.direct"] }
+  }));
+  const chatGptReport = await collectQuota({ paths: [authPath], claudeCodePaths: [], now: NOW, families: ["codex"], env: {}, stores: [], allowBrowser: false });
+  assert.match(chatGptReport.providers[0].error ?? "", /Sign in with ChatGPT OAuth without wham\/usage claims/);
 });
 
 test("a crashing provider degrades instead of taking the report down", async () => {

@@ -217,6 +217,7 @@ export async function collectQuota(options = {}) {
   const familyWarnings = {};
 
   const hasOpenAi = loaded.rawProviders?.includes("openai") || Boolean(env.OPENAI_API_KEY);
+  const hasOpenAiChatGptOAuth = Boolean(loaded.hasOpenAiChatGptOAuth);
 
   await Promise.all(
     families.map(async (family) => {
@@ -229,7 +230,10 @@ export async function collectQuota(options = {}) {
           degradedResult({
             family,
             label: LABEL_BY_FAMILY[family] ?? family,
-            error: claude.unavailable && family === "claude" ? claude.unavailable : missingCredentialMessage(family, { hasOpenAi }),
+            error:
+              claude.unavailable && family === "claude"
+                ? claude.unavailable
+                : missingCredentialMessage(family, { hasOpenAi, hasOpenAiChatGptOAuth }),
             notConfigured: true,
             source: loaded.paths[0] ?? resolveAuthPaths({ env, home: options.home })[0] ?? "~/.pi/agent/auth.json",
             now,
@@ -373,7 +377,7 @@ export async function collectQuota(options = {}) {
 
 /**
  * @param {string} family
- * @param {{ hasOpenAi?: boolean }} [context]
+ * @param {{ hasOpenAi?: boolean, hasOpenAiChatGptOAuth?: boolean }} [context]
  * @returns {string}
  */
 function missingCredentialMessage(family, context = {}) {
@@ -384,7 +388,9 @@ function missingCredentialMessage(family, context = {}) {
     return "GitHub Actions uses the authenticated gh CLI; no Pi-store credential is required";
   }
   if (family === "codex" && context.hasOpenAi) {
-    return "no codex credential in the Pi store (found 'openai' API; run /login openai-codex in Pi for subscription quota)";
+    return context.hasOpenAiChatGptOAuth
+      ? "no codex credential in the Pi store (found 'openai' API Sign in with ChatGPT OAuth without wham/usage claims; also run /login openai-codex in Pi for subscription quota)"
+      : "no codex credential in the Pi store (found 'openai' API; run /login openai-codex in Pi for subscription quota)";
   }
   return `no ${family} credential in the Pi store`;
 }

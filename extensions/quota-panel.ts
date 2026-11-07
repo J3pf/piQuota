@@ -374,7 +374,7 @@ export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number
     const provider = providerFor(family);
     return { provider, window: provider?.windows.find(matches) ?? null };
   };
-  const rows = [
+  const allRows = [
     { label: "Claude: ", color: "#D97757", ...windowFor("claude", isFiveHour) },
     { label: "Codex:  ", color: "#10A37F", ...windowFor("codex", isFiveHour) },
     { label: "Agy:    ", color: "#4285F4", ...windowFor("antigravity", (window) => window.id === "gemini-5h" || (/gemini/i.test(window.id) && isFiveHour(window))) },
@@ -382,8 +382,10 @@ export function renderBox(report: QuotaReport, theme: Theme, totalWidth?: number
     { label: "OP-Go:  ", color: "#007AFF", ...windowFor("opencode-go", isFiveHour) },
   ];
   if (providerFor("github-actions")) {
-    rows.push({ label: "GH Actions:", color: "#2088FF", ...windowFor("github-actions", (window) => window.id === "monthly") });
+    allRows.push({ label: "GH Actions:", color: "#2088FF", ...windowFor("github-actions", (window) => window.id === "monthly") });
   }
+  const configuredRows = allRows.filter(({ provider }) => Boolean(provider && provider.notConfigured !== true));
+  const rows = configuredRows.length > 0 ? configuredRows : allRows;
   const content = rows.map(({ label, color, provider, window }) => {
     const name = paint(color, label);
     const showingLastKnownValues = Boolean(provider?.note && /last known values/i.test(provider.note));
@@ -429,7 +431,7 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
     const provider = providerFor(family);
     return { provider, window: provider?.windows.find(matches) ?? null };
   };
-  const rows = report
+  const allRows = report
     ? [
         { label: "Claude: ", color: "#D97757", ...windowFor("claude", isFiveHour) },
         { label: "Codex:  ", color: "#10A37F", ...windowFor("codex", isFiveHour) },
@@ -441,6 +443,8 @@ function renderSidebarCard(report: QuotaReport | null, theme: Theme, width: numb
           : []),
       ]
     : [];
+  const configuredRows = allRows.filter(({ provider }) => Boolean(provider && provider.notConfigured !== true));
+  const rows = configuredRows.length > 0 ? configuredRows : allRows;
   const content = rows.length > 0
     ? rows.map(({ label, color, provider, window }) => {
         const name = paint(color, label);

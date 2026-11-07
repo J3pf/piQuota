@@ -286,7 +286,14 @@ export function readAuthStore(path) {
     const credential = normalizeCredential(provider, /** @type {Record<string, unknown>} */ (entry), path);
     if (credential) credentials.push(credential);
   }
-  return { credentials, warnings, rawProviders: Object.keys(parsed) };
+  const hasOpenAiChatGptOAuth = Boolean(
+    parsed.openai &&
+      typeof parsed.openai === "object" &&
+      !Array.isArray(parsed.openai) &&
+      (parsed.openai.clientId ||
+        (Array.isArray(parsed.openai.scopes) && parsed.openai.scopes.includes("chatgpt.tokens.use.direct"))),
+  );
+  return { credentials, warnings, rawProviders: Object.keys(parsed), hasOpenAiChatGptOAuth };
 }
 
 /**
@@ -313,12 +320,14 @@ export function loadPiCredentials(options = {}) {
   const seen = new Set();
   /** @type {Set<string>} */
   const rawProviders = new Set();
+  let hasOpenAiChatGptOAuth = false;
 
   for (const path of paths) {
     const result = readAuthStore(path);
     warnings.push(...result.warnings);
     if (result.credentials.length > 0) usedPaths.push(path);
     for (const p of result.rawProviders ?? []) rawProviders.add(p);
+    if (result.hasOpenAiChatGptOAuth) hasOpenAiChatGptOAuth = true;
     for (const credential of result.credentials) {
       const key = `${credential.family}:${credential.identity}`;
       if (seen.has(key)) continue;
@@ -328,7 +337,7 @@ export function loadPiCredentials(options = {}) {
   }
 
   credentials.sort((a, b) => a.family.localeCompare(b.family));
-  return { credentials, paths: usedPaths, warnings, rawProviders: Array.from(rawProviders) };
+  return { credentials, paths: usedPaths, warnings, rawProviders: Array.from(rawProviders), hasOpenAiChatGptOAuth };
 }
 
 /**
