@@ -212,10 +212,13 @@ async function fetchOrgQuota(org, { now, env, overrideAllowance, runCommand, tim
 
   const encodedOrg = encodeURIComponent(org);
   const basePath = isUser ? `/users/${encodedOrg}` : `/organizations/${encodedOrg}`;
-  const summary = await requestGhJson(
-    `${basePath}/settings/billing/usage/summary?product=Actions`,
-    { runCommand, timeoutMs, env },
-  );
+  const current = new Date(now);
+  const year = current.getUTCFullYear();
+  const month = current.getUTCMonth() + 1;
+  const [summary, detailed] = await Promise.all([
+    requestGhJson(`${basePath}/settings/billing/usage/summary?product=Actions`, { runCommand, timeoutMs, env }),
+    requestGhJson(`${basePath}/settings/billing/usage?year=${year}&month=${month}`, { runCommand, timeoutMs, env }),
+  ]);
   if (!summary.ok) return { ok: false, error: summary.error };
   const summaryBody = record(summary.body);
   if (!summaryBody || !Array.isArray(summaryBody.usageItems)) {
@@ -226,13 +229,6 @@ async function fetchOrgQuota(org, { now, env, overrideAllowance, runCommand, tim
     return { ok: false, error: "GitHub Actions usage summary contained no Linux minute rows; verify organization billing access and the GitHub API response shape." };
   }
 
-  const current = new Date(now);
-  const year = current.getUTCFullYear();
-  const month = current.getUTCMonth() + 1;
-  const detailed = await requestGhJson(
-    `${basePath}/settings/billing/usage?year=${year}&month=${month}`,
-    { runCommand, timeoutMs, env },
-  );
   if (!detailed.ok) return { ok: false, error: detailed.error };
   const detailedBody = record(detailed.body);
   if (!detailedBody || !Array.isArray(detailedBody.usageItems)) {
@@ -338,9 +334,12 @@ export async function fetchQuota(credential, options = {}) {
     const windows = [];
     const plans = [];
     const errors = [];
+    const orgResults = await Promise.all(
+      orgs.map((org) => fetchOrgQuota(org, { now, env, overrideAllowance, runCommand, timeoutMs, repoFilter })),
+    );
     for (let i = 0; i < orgs.length; i++) {
       const org = orgs[i];
-      const res = await fetchOrgQuota(org, { now, env, overrideAllowance, runCommand, timeoutMs, repoFilter });
+      const res = orgResults[i];
       if (!res.ok) {
         errors.push(`${org}: ${res.error}`);
         continue;

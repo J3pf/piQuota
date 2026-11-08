@@ -140,10 +140,18 @@ export function mergeLastGood(report, options = {}) {
   /** @type {string[]} */
   const warnings = [...report.warnings];
 
+  let dirty = false;
   for (const [family, results] of Object.entries(report.byFamily)) {
     const fresh = results[0];
     if (fresh?.ok && fresh.windows.length > 0) {
-      state[family] = { results, result: fresh, savedAt: now };
+      const existing = state[family];
+      const unchangedFromCache =
+        Boolean(existing?.result?.updatedAt && existing.result.updatedAt === fresh.updatedAt) &&
+        Math.abs(now - (existing?.savedAt ?? 0)) < 60_000;
+      if (!unchangedFromCache) {
+        state[family] = { results, result: fresh, savedAt: now };
+        dirty = true;
+      }
       saved.push(family);
       byFamily[family] = results;
       continue;
@@ -191,7 +199,7 @@ export function mergeLastGood(report, options = {}) {
     if (carriedList[0]) replacements.set(family, carriedList[0]);
   }
 
-  if (saved.length > 0) writeLastGood(state, options);
+  if (dirty) writeLastGood(state, options);
 
   // Same reason as above: keep the canonical order.
   const providers = orderedProviders(report, replacements, byFamily);

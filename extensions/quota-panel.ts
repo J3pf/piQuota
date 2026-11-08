@@ -170,20 +170,31 @@ function usedOf(window: QuotaWindow | null): number | null {
   return null;
 }
 
+let cachedCliPath: string | null | undefined;
+let cachedOmarchyPresent: boolean | undefined;
+
 function resolveCliPath(): string | null {
   const override = process.env.PI_QUOTA_BIN;
   if (override && existsSync(override)) return override;
+  if (cachedCliPath !== undefined) return cachedCliPath;
   try {
     const sibling = fileURLToPath(new URL("../bin/piquota.js", import.meta.url));
-    if (existsSync(sibling)) return sibling;
+    if (existsSync(sibling)) {
+      cachedCliPath = sibling;
+      return sibling;
+    }
   } catch {}
   for (const candidate of [
     join(homedir(), ".local", "share", "pi-quota", "bin", "piquota.js"),
     join(homedir(), ".local", "bin", "piquota"),
     join(homedir(), ".pi", "agent", "npm", "node_modules", "@j3pf", "piquota", "bin", "piquota.js"),
   ]) {
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate)) {
+      cachedCliPath = candidate;
+      return candidate;
+    }
   }
+  cachedCliPath = null;
   return null;
 }
 
@@ -255,13 +266,6 @@ type ErrorKind = "transient" | "throttle" | "expired" | "auth" | "missing" | "un
 function errorKind(error: string | null | undefined): ErrorKind {
   if (!error || typeof error !== "string") return "unknown";
   if (
-    /no [a-z-]+ credential|has no (anthropic|openai-codex|antigravity|opencode-go) (access )?token|no key stored|no (?:OpenCode session|"?__Host-console_session"?|"auth") cookie|no auth cookie:|no opencode\.ai session|Claude Code CLI has no readable credentials|requires the gh CLI/i.test(
-      error,
-    )
-  ) {
-    return "missing";
-  }
-  if (
     /token expired|token EXPIRED|token -?\d+m|expires in -\d+|sign-in expired|re-authenticate|expired or rejected|rejected by .* zen|rejected; run \/login|reconnect OpenCode in Pi/i.test(
       error,
     )
@@ -273,6 +277,13 @@ function errorKind(error: string | null | undefined): ErrorKind {
   }
   if (/\bHTTP 40[13]\b|\bstatus 40[13]\b|\b40[13]\s+(?:unauthorized|forbidden)\b|unauthorized|forbidden|invalid_grant|token rejected/i.test(error)) {
     return "auth";
+  }
+  if (
+    /no [a-z-]+ credential|has no (anthropic|openai-codex|antigravity|opencode-go|copilot|openrouter) (access |API )?(token|key)|no key stored|no (?:OpenCode session|"?__Host-console_session"?|"auth") cookie|no auth cookie:|no opencode\.ai session|Claude Code CLI has no readable credentials|requires the gh CLI/i.test(
+      error,
+    )
+  ) {
+    return "missing";
   }
   if (/HTTP 5\d\d|timed out|timeout|ECONNRESET|socket|network|fetch failed|ENOTFOUND|ETIMEDOUT|EPIPE|ECONNREFUSED|aborted|hang up/i.test(error)) {
     return "transient";
@@ -990,9 +1001,11 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
 
   function isOmarchyPresent(): boolean {
     if (process.env.PI_QUOTA_OMARCHY_DIR) return true;
+    if (cachedOmarchyPresent !== undefined) return cachedOmarchyPresent;
     const home = homedir();
     const stateBase = process.env.XDG_STATE_HOME || join(home, ".local", "state");
-    return existsSync(join(stateBase, "omarchy")) || existsSync(join(home, ".config", "omarchy"));
+    cachedOmarchyPresent = existsSync(join(stateBase, "omarchy")) || existsSync(join(home, ".config", "omarchy"));
+    return cachedOmarchyPresent;
   }
 
   async function refresh(ctx: UiContext, force: boolean, onlyFamily?: string | null): Promise<void> {
