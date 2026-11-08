@@ -403,3 +403,76 @@ test("claude: out-of-range decimal_places in extra_usage degrades gracefully wit
   assert.equal(result.ok, true);
   assert.match(result.windows[1].note ?? "", /extra usage 250 USD/);
 });
+
+test("opencode-go: skips redundant /zen/v1/models call when /zen/go/v1/usage already returned 401", async () => {
+  const { fetchQuota } = await import("../src/providers/opencode-go.js");
+  let modelsCalled = 0;
+  const result = await fetchQuota(
+    {
+      provider: "opencode-go",
+      family: "opencode-go",
+      label: "OpenCode Go (Pi)",
+      source: "/tmp/fake",
+      identity: "opencode-user",
+      key: "sk-opencode-expired",
+      kind: "api_key",
+    },
+    {
+      now: 1_800_000_000_000,
+      stores: [],
+      allowBrowser: false,
+      env: {},
+      home: mkdtempSync(join(tmpdir(), "pi-quota-oc-401-")),
+      fetchFn: async (url) => {
+        if (String(url).includes("/zen/v1/models")) {
+          modelsCalled += 1;
+        }
+        return jsonResponse({ error: { code: "api_key_expired" } }, { status: 401 });
+      },
+    },
+  );
+  assert.equal(result.ok, false);
+  assert.equal(modelsCalled, 0, "must not call /zen/v1/models when /zen/go/v1/usage already returned 401");
+  assert.match(result.error ?? "", /rejected by OpenCode Zen/);
+});
+
+test("antigravity: caches discovered projectId in state directory so subsequent calls skip loadCodeAssist", async () => {
+  const { fetchQuota } = await import("../src/providers/antigravity.js");
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-agy-proj-"));
+  let loadCodeAssistCalls = 0;
+  const fetchFn = async (url) => {
+    const u = String(url);
+    if (u.includes("loadCodeAssist")) {
+      loadCodeAssistCalls += 1;
+      return jsonResponse({ cloudaicompanionProject: "cached-proj-12345678" });
+    }
+    return jsonResponse({
+      paidTier: "google-ai-pro",
+      groups: [
+        {
+          displayName: "Gemini",
+          buckets: [{ bucketId: "five-hour", remainingFraction: 0.75, resetTime: "2030-01-01T05:00:00Z" }],
+        },
+      ],
+    });
+  };
+  const credential = {
+    provider: "antigravity",
+    family: "antigravity",
+    label: "Antigravity (Pi)",
+    source: "/tmp/fake",
+    identity: "agy-user@example.com",
+    access: "ya29.valid",
+    expiresAtMs: 1_800_003_600_000,
+    projectId: null,
+    kind: "oauth",
+  };
+
+  const first = await fetchQuota(credential, { now: 1_800_000_000_000, fetchFn, home, env: {} });
+  assert.equal(first.ok, true);
+  assert.equal(loadCodeAssistCalls, 1);
+
+  const second = await fetchQuota(credential, { now: 1_800_000_000_000, fetchFn, home, env: {} });
+  assert.equal(second.ok, true);
+  assert.equal(loadCodeAssistCalls, 1, "second call must use cached projectId without calling loadCodeAssist");
+});

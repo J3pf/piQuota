@@ -388,3 +388,49 @@ test("warnings from parallel provider fetches are deterministically ordered by f
   assert.ok(throttledWarnings[0].startsWith("claude:"));
   assert.ok(throttledWarnings[1].startsWith("codex:"));
 });
+
+test("collectQuota falls back to ~/.codex/auth.json read-only when Pi store lacks openai-codex", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-quota-codex-cli-"));
+  const piStore = join(home, "pi-auth.json");
+  const codexStore = join(home, "codex-auth.json");
+  writeFileSync(piStore, JSON.stringify({ openai: { type: "oauth", access: "eyJ.direct.sig", clientId: "app_123" } }));
+  const header = Buffer.from(JSON.stringify({ alg: "RS256" })).toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({
+      exp: Math.floor(NOW / 1000) + 3600,
+      "https://api.openai.com/profile": { email: "cli-user@example.com" },
+      "https://api.openai.com/auth": { chatgpt_account_id: "acc-cli-999", chatgpt_plan_type: "plus" },
+    }),
+  ).toString("base64url");
+  writeFileSync(
+    codexStore,
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: `${header}.${payload}.sig`,
+        refresh_token: "rt_secret_never_load",
+        account_id: "acc-cli-999",
+      },
+    }),
+  );
+
+  const { fetchFn } = fullRoutes();
+  const report = await collectQuota({
+    paths: [piStore],
+    codexAuthPath: codexStore,
+    claudeCodePaths: [],
+    now: NOW,
+    fetchFn,
+    families: ["codex"],
+    env: {},
+    home,
+    stores: [],
+    allowBrowser: false,
+  });
+
+  const codex = report.providers[0];
+  assert.equal(codex.ok, true);
+  assert.equal(codex.sourceKind, "codex-cli");
+  assert.equal(codex.plan, "plus");
+  assert.equal(JSON.stringify(report).includes("rt_secret_never_load"), false);
+});

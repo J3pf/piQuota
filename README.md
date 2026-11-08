@@ -459,7 +459,7 @@ extensions/quota-panel.ts      Pi TUI line and /quota
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 237 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 241 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store

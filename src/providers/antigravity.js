@@ -16,6 +16,10 @@
  * to disk.
  */
 
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+
 import { buildWindow, clampPercent, degradedResult, displayIdentity, finiteNumber, stringValue, windowFromName } from "../model.js";
 import { requestJson } from "../http.js";
 import { describeOAuthClient, ensureFreshAccessToken, resolveOAuthClient } from "./antigravity-oauth.js";
@@ -35,6 +39,80 @@ function record(value) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? /** @type {Record<string, unknown>} */ (value)
     : null;
+}
+
+/**
+ * Resolve the state file used to cache discovered Cloud Code project IDs by
+ * credential identity so accounts without `projectId` in `auth.json` avoid a
+ * redundant `loadCodeAssist` round-trip on every poll.
+ *
+ * @param {{ env?: Record<string, string | undefined>, home?: string, fetchFn?: typeof fetch }} [options]
+ * @returns {string | null}
+ */
+function resolveProjectCachePath(options = {}) {
+  const env = options.env ?? process.env;
+  if (options.fetchFn && !options.home && !env.PI_QUOTA_STATE_DIR) {
+    return null;
+  }
+  const baseDir =
+    stringValue(env.PI_QUOTA_STATE_DIR) ??
+    join(stringValue(env.XDG_STATE_HOME) ?? join(options.home ?? homedir(), ".local", "state"), "pi-quota");
+  return join(baseDir, "antigravity-projects.json");
+}
+
+/**
+ * @param {string | undefined} identity
+ * @param {{ env?: Record<string, string | undefined>, home?: string, fetchFn?: typeof fetch }} [options]
+ * @returns {string | null}
+ */
+function readCachedProjectId(identity, options = {}) {
+  if (!identity) return null;
+  const cachePath = resolveProjectCachePath(options);
+  if (!cachePath || !existsSync(cachePath)) return null;
+  try {
+    const parsed = record(JSON.parse(readFileSync(cachePath, { encoding: "utf-8", flag: "r" })));
+    return stringValue(parsed?.[identity]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {string | undefined} identity
+ * @param {string | null} projectId
+ * @param {{ env?: Record<string, string | undefined>, home?: string, fetchFn?: typeof fetch }} [options]
+ */
+function writeCachedProjectId(identity, projectId, options = {}) {
+  if (!identity || !projectId) return;
+  const cachePath = resolveProjectCachePath(options);
+  if (!cachePath) return;
+  let tmp = "";
+  try {
+    const dir = dirname(cachePath);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    /** @type {Record<string, unknown>} */
+    let current = {};
+    if (existsSync(cachePath)) {
+      try {
+        current = record(JSON.parse(readFileSync(cachePath, { encoding: "utf-8", flag: "r" }))) ?? {};
+      } catch {
+        current = {};
+      }
+    }
+    if (current[identity] === projectId) return;
+    current[identity] = projectId;
+    tmp = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+    renameSync(tmp, cachePath);
+  } catch {
+    if (tmp) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // Ignore cleanup failure.
+      }
+    }
+  }
 }
 
 /**
@@ -158,7 +236,7 @@ export async function fetchQuota(credential, options = {}) {
       error: `Antigravity access token refresh failed: ${freshness.error}`,
     });
   }
-  let projectId = credential.projectId ?? null;
+  let projectId = credential.projectId ?? readCachedProjectId(credential.identity, options);
 
   /** @type {string | null} */
   let lastError = null;
@@ -167,6 +245,9 @@ export async function fetchQuota(credential, options = {}) {
   for (const cloudBase of CLOUD_CODE_BASES) {
     if (!projectId && account.access) {
       projectId = await resolveProjectId(account.access, cloudBase, fetchFn, options.timeoutMs);
+      if (projectId) {
+        writeCachedProjectId(credential.identity, projectId, options);
+      }
     }
     if (!projectId) {
       authFailed = false;

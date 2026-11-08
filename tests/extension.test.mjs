@@ -884,3 +884,33 @@ test("agent_end triggers a debounced quota refresh and agent_start cancels pendi
   }
 });
 
+test("agent_end refreshes only the active model family with --force when ctx.model is known", async () => {
+  const previousDebounce = process.env.PI_QUOTA_EVENT_DEBOUNCE_MS;
+  process.env.PI_QUOTA_EVENT_DEBOUNCE_MS = "25";
+  try {
+    const module = await import(EXTENSION);
+    /** @type {string[][]} */
+    const recordedArgs = [];
+    const harness = makeHarness();
+    harness.ctx.model = { provider: "anthropic", id: "claude-sonnet-4" };
+    const originalExec = harness.pi.exec;
+    harness.pi.exec = async (cmd, args, opts) => {
+      recordedArgs.push(args);
+      return originalExec(cmd, args, opts);
+    };
+    module.default(harness.pi);
+    await startSession(harness);
+
+    const onAgentEnd = harness.handlers.get("agent_end");
+    await onAgentEnd({}, harness.ctx);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const lastCall = recordedArgs.filter((a) => a.includes("--json")).at(-1) ?? [];
+    assert.ok(lastCall.includes("claude"), `expected selective family 'claude' in args: ${JSON.stringify(lastCall)}`);
+    assert.ok(lastCall.includes("--force"), `expected '--force' in args: ${JSON.stringify(lastCall)}`);
+  } finally {
+    if (previousDebounce === undefined) delete process.env.PI_QUOTA_EVENT_DEBOUNCE_MS;
+    else process.env.PI_QUOTA_EVENT_DEBOUNCE_MS = previousDebounce;
+  }
+});
+

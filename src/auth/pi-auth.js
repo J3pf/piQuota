@@ -50,7 +50,7 @@ const MAX_WINDOWS_PROFILES = 40;
  * @property {string} family              Normalized family, e.g. "codex".
  * @property {string} label               Display label, e.g. "Codex (Pi)".
  * @property {string} source              Absolute path the credential came from.
- * @property {"pi" | "claude-code"} [sourceKind]  Which kind of store produced it.
+ * @property {"pi" | "claude-code" | "codex-cli"} [sourceKind]  Which kind of store produced it.
  * @property {string} identity            Stable per-provider identity (never a token).
  * @property {string} [access]            OAuth access token (memory only).
  * @property {string} [refresh]           OAuth refresh token (memory only).
@@ -343,6 +343,74 @@ export function loadPiCredentials(options = {}) {
 
   credentials.sort((a, b) => a.family.localeCompare(b.family));
   return { credentials, paths: usedPaths, warnings, rawProviders: Array.from(rawProviders), hasOpenAiChatGptOAuth };
+}
+
+/**
+ * Read-only fallback reader for the Codex CLI store (`~/.codex/auth.json`).
+ *
+ * Used only when Pi's own `auth.json` has no `openai-codex` entry (for example
+ * when the user signed in via Pi 1.5+ `/login openai` and also uses Codex CLI).
+ * Opens with `flag: "r"` and never reads or carries `refresh_token`.
+ *
+ * @param {{
+ *   env?: Record<string, string | undefined>,
+ *   home?: string,
+ *   paths?: string[],
+ *   codexAuthPath?: string | null,
+ * }} [options]
+ * @returns {PiCredential | null}
+ */
+export function loadCodexCliCredential(options = {}) {
+  const env = options.env ?? process.env;
+  if (options.codexAuthPath === null || text(env.PI_QUOTA_CODEX_SOURCE)?.toLowerCase() === "pi") {
+    return null;
+  }
+  const explicitPath = options.codexAuthPath ?? text(env.PI_QUOTA_CODEX_AUTH_PATH);
+  // Keep hermetic unit tests isolated when `options.paths` overrides Pi's store
+  // paths without an explicit Codex CLI path.
+  if (!explicitPath && Array.isArray(options.paths)) {
+    return null;
+  }
+  const candidatePath = explicitPath ?? join(options.home ?? homedir(), ".codex", "auth.json");
+  if (!existsSync(candidatePath)) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(candidatePath, { encoding: "utf-8", flag: "r" }));
+  } catch {
+    return null;
+  }
+  const tokens = parsed?.tokens;
+  if (!tokens || typeof tokens !== "object" || Array.isArray(tokens)) return null;
+
+  const access = text(tokens.access_token);
+  if (!access) return null;
+  const idToken = text(tokens.id_token);
+
+  const accountId =
+    text(tokens.account_id) ??
+    extractChatGptAccountId(access) ??
+    (idToken ? extractChatGptAccountId(idToken) : null);
+  const email = extractEmail(access) ?? (idToken ? extractEmail(idToken) : null);
+  const planType = extractChatGptPlanType(access) ?? (idToken ? extractChatGptPlanType(idToken) : null);
+  const expiresAtMs = extractExpiresAtMs(access);
+  const identity = accountId ?? email ?? fingerprint(["openai-codex", access]);
+
+  return {
+    provider: "openai-codex",
+    family: "codex",
+    label: LABEL_BY_FAMILY.codex,
+    source: candidatePath,
+    sourceKind: "codex-cli",
+    identity,
+    access,
+    expiresAtMs,
+    accountId,
+    projectId: null,
+    email,
+    planType,
+    kind: "oauth",
+  };
 }
 
 /**

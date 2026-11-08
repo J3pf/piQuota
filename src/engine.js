@@ -6,7 +6,7 @@
  * degraded result with an actionable message.
  */
 
-import { checkFreshness, LABEL_BY_FAMILY, loadPiCredentials, resolveAuthPaths } from "./auth/pi-auth.js";
+import { checkFreshness, LABEL_BY_FAMILY, loadCodexCliCredential, loadPiCredentials, resolveAuthPaths } from "./auth/pi-auth.js";
 import { loadClaudeCodeCredential } from "./auth/claude-code-auth.js";
 import { redact } from "./http.js";
 import { degradedResult, displayIdentity, selectPrimaryWindow } from "./model.js";
@@ -214,8 +214,20 @@ export async function collectQuota(options = {}) {
    * @param {string} family
    * @returns {import("./auth/pi-auth.js").PiCredential[]}
    */
+  const piCodexCredentials = loaded.credentials.filter((credential) => credential.family === "codex");
+  const codexCliFallback =
+    piCodexCredentials.length === 0
+      ? loadCodexCliCredential({
+          env,
+          home: options.home,
+          paths: options.paths,
+          codexAuthPath: options.codexAuthPath,
+        })
+      : null;
+
   const credentialsFor = (family) => {
     if (family === "claude") return claude.credentials;
+    if (family === "codex") return piCodexCredentials.length > 0 ? piCodexCredentials : codexCliFallback ? [codexCliFallback] : [];
     if (family === "github-actions") return [GH_CLI_CREDENTIAL];
     return loaded.credentials.filter((credential) => credential.family === family);
   };
@@ -417,7 +429,9 @@ function missingCredentialMessage(family, context = {}) {
  * @returns {string}
  */
 function expiredTokenName(credential) {
-  return credential.sourceKind === "claude-code" ? "Claude Code token" : "Pi token";
+  if (credential.sourceKind === "claude-code") return "Claude Code token";
+  if (credential.sourceKind === "codex-cli") return "Codex CLI token";
+  return "Pi token";
 }
 
 /**
@@ -425,7 +439,7 @@ function expiredTokenName(credential) {
  * @returns {string}
  */
 function refreshHint(credential) {
-  return credential.sourceKind === "claude-code"
-    ? "run `claude` once to refresh it"
-    : "use that provider in Pi to refresh it";
+  if (credential.sourceKind === "claude-code") return "run `claude` once to refresh it";
+  if (credential.sourceKind === "codex-cli") return "run `codex` once to refresh it";
+  return "use that provider in Pi to refresh it";
 }

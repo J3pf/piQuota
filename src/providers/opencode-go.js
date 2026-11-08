@@ -223,8 +223,10 @@ export async function fetchQuota(credential, options = {}) {
 
   // 1. Primary path: query `GET https://opencode.ai/zen/go/v1/usage` directly with the API key.
   const apiKey = resolveOpenCodeApiKey(credential, { env: options.env, home: options.home });
+  /** @type {{ ok: boolean, windows: import("../model.js").QuotaWindow[], authError: boolean, error: string | null } | null} */
+  let direct = null;
   if (apiKey) {
-    const direct = await fetchGoUsageByKey(apiKey, {
+    direct = await fetchGoUsageByKey(apiKey, {
       fetchFn: options.fetchFn,
       timeoutMs: options.timeoutMs,
       now,
@@ -278,7 +280,10 @@ export async function fetchQuota(credential, options = {}) {
     };
   }
 
-  const zen = await describeZenKey(apiKey, options.fetchFn, options.timeoutMs);
+  const zen =
+    direct?.authError && direct.error
+      ? direct.error
+      : await describeZenKey(apiKey, options.fetchFn, options.timeoutMs);
   const hint =
     session.origin === "browser"
       ? `the browser session was read from ${session.detail} but was not accepted`

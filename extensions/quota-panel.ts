@@ -1006,14 +1006,52 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     }
   }
 
-  async function refresh(ctx: UiContext, force: boolean): Promise<void> {
+  async function refresh(ctx: UiContext, force: boolean, onlyFamily?: string | null): Promise<void> {
     if (refreshing) return;
     refreshing = true;
     try {
-      const next = await runCli(force ? ["--json", "--force"] : ["--json"]);
+      const cliArgs =
+        onlyFamily && report
+          ? ["--json", onlyFamily, "--force"]
+          : force
+            ? ["--json", "--force"]
+            : ["--json"];
+      const next = await runCli(cliArgs);
       if (disposed) return;
       if (next) {
-        report = next;
+        if (onlyFamily && report) {
+          const updatedProviders = next.providers.filter((provider) => provider.family === onlyFamily);
+          if (updatedProviders.length > 0) {
+            let replaced = false;
+            const mergedProviders: QuotaResult[] = [];
+            for (const provider of report.providers) {
+              if (provider.family === onlyFamily) {
+                if (!replaced) {
+                  mergedProviders.push(...updatedProviders);
+                  replaced = true;
+                }
+              } else {
+                mergedProviders.push(provider);
+              }
+            }
+            if (!replaced) {
+              mergedProviders.push(...updatedProviders);
+            }
+            report = {
+              ...report,
+              generatedAt: next.generatedAt,
+              providers: mergedProviders,
+              byFamily: {
+                ...(report.byFamily ?? {}),
+                [onlyFamily]: updatedProviders,
+              },
+            };
+          } else {
+            report = next;
+          }
+        } else {
+          report = next;
+        }
         paintUi(ctx);
         void syncOmarchyInBackground();
       }
@@ -1058,7 +1096,7 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     agentEndTimer = setTimeout(() => {
       agentEndTimer = null;
       if (!ui.hasUI || disposed) return;
-      void refresh(ui, false);
+      void refresh(ui, true, resolveActiveFamily(ui.model));
     }, debounceMs);
     // SAFETY: Node.js Timer provides unref to prevent hanging process exit.
     (agentEndTimer as unknown as { unref?: () => void }).unref?.();
