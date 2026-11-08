@@ -138,7 +138,15 @@ test("publishRecords writes valid JSON atomically and leaves no temp files", () 
     assert.equal(JSON.parse(readFileSync(join(dir, "pi-claude.json"), "utf-8")).id, "pi-claude");
     assert.deepEqual(readdirSync(dir), ["pi-claude.json"]);
 
-    // A second run replaces the file in place.
+    // A second run with identical data but a later timestamp does not rewrite the file on disk.
+    const unchangedContentBefore = readFileSync(join(dir, "pi-claude.json"), "utf-8");
+    publishRecords(
+      buildRecords(/** @type {any} */ ({ providers: [provider({ updatedAt: "2026-10-04T06:00:00.000Z" })] }), { now: NOW + 3600_000 }),
+      { dir },
+    );
+    assert.equal(readFileSync(join(dir, "pi-claude.json"), "utf-8"), unchangedContentBefore);
+
+    // A run with a changed tierLabel replaces the file in place.
     publishRecords(buildRecords(/** @type {any} */ ({ providers: [provider({ plan: "max" })] }), { now: NOW }), { dir });
     assert.equal(JSON.parse(readFileSync(join(dir, "pi-claude.json"), "utf-8")).tierLabel, "max");
     assert.deepEqual(readdirSync(dir), ["pi-claude.json"]);
@@ -218,6 +226,9 @@ test("omarchy automatically skips claude when native claude.json exists in targe
   assert.equal(code, 0);
   assert.equal(existsSync(join(dir, "pi-claude.json")), false);
   assert.equal(existsSync(join(dir, "pi-codex.json")), true);
+
+  writeFileSync(join(dir, "codex.json"), "{}");
+  assert.deepEqual([...skippedFamilies({}, dir)].sort(), ["claude", "codex"]);
 });
 
 test("omarchy record summarizes long provider names to fit tab switcher", () => {
@@ -229,6 +240,12 @@ test("omarchy record summarizes long provider names to fit tab switcher", () => 
 
   const gh = buildRecord(provider({ family: "github-actions", label: "GitHub Actions", account: "KoralisSoft" }), { now: NOW });
   assert.equal(gh.record.name, "GH Actions");
+
+  const copilot = buildRecord(provider({ family: "copilot", label: "GitHub Copilot (Pi)" }), { now: NOW });
+  assert.equal(copilot.record.name, "Copilot");
+
+  const openrouter = buildRecord(provider({ family: "openrouter", label: "OpenRouter (Pi)" }), { now: NOW });
+  assert.equal(openrouter.record.name, "OpenRouter");
 
   const claude = buildRecord(provider({ family: "claude", label: "Claude (Pi)" }), { now: NOW });
   assert.equal(claude.record.name, "Claude");

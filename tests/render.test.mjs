@@ -260,6 +260,9 @@ test("the panel names the Claude store that was actually read", () => {
   const fromCli = renderProviderLines({ ...base, sourceKind: "claude-code" }, plainPaint).join("\n");
   assert.match(fromCli, /Claude Code CLI/);
 
+  const fromCodexCli = renderProviderLines({ ...base, family: "codex", label: "Codex (Pi)", sourceKind: "codex-cli" }, plainPaint).join("\n");
+  assert.match(fromCodexCli, /Codex CLI/);
+
   const fromStore = renderProviderLines({ ...base, sourceKind: "pi" }, plainPaint).join("\n");
   assert.equal(fromStore.includes("Claude Code CLI"), false, "Pi's own entry is the unremarkable default");
 });

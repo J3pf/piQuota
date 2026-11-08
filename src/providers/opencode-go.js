@@ -244,18 +244,21 @@ export async function fetchQuota(credential, options = {}) {
   }
 
   // 2. Fallback path: resolve session cookie / web console when the API endpoint
-  // did not return windows (or when using a cookie-only setup).
+  // did not return windows (or when using a cookie-only setup). When the API key
+  // already failed with 401/403 (`direct.authError`), do not scan/copy browser
+  // SQLite databases unless the caller explicitly requested `allowBrowser: true`.
+  const allowBrowser = options.allowBrowser ?? (direct?.authError ? false : undefined);
   const session = resolveCookie({
     env: options.env,
     home: options.home,
     stores: options.stores,
-    allowBrowser: options.allowBrowser,
+    allowBrowser,
   });
   const plan = await readGoPlan({
     env: options.env,
     home: options.home,
     stores: options.stores,
-    allowBrowser: options.allowBrowser,
+    allowBrowser,
     cookie: session.found ? session.value : "",
     cookieName: session.name,
     cookieOrigin: session.origin ?? undefined,

@@ -115,11 +115,10 @@ async function main() {
 
   if (command === "omarchy") {
     const load = async () => {
-      const everyFamily = enabledFamilies({ env: process.env });
-      const loadFresh = () => collectQuota({ families: everyFamily, timeoutMs: args.timeoutMs, refresh, force: args.force });
+      const loadFresh = () => collectQuota({ timeoutMs: args.timeoutMs, refresh, force: args.force });
       const fresh = args.noCache
         ? await loadFresh()
-        : (await withCache({ ttlMs: args.ttlMs, force: args.force, families: everyFamily }, loadFresh)).report;
+        : (await withCache({ ttlMs: args.ttlMs, force: args.force }, loadFresh)).report;
       return mergeLastGood(fresh, {}).report;
     };
     return runOmarchyCommand({ load });
@@ -140,7 +139,8 @@ async function main() {
     requested: families.length > 0 ? families : undefined,
     explicit,
   });
-  const load = () => collectQuota({ families: selected, explicit, timeoutMs: args.timeoutMs, refresh, force: args.force });
+  const requestedFamilies = families.length > 0 ? selected : undefined;
+  const load = () => collectQuota({ families: requestedFamilies, explicit, timeoutMs: args.timeoutMs, refresh, force: args.force });
 
   let report;
   let cached = false;
@@ -148,7 +148,7 @@ async function main() {
   if (args.noCache) {
     report = await load();
   } else {
-    const result = await withCache({ ttlMs: args.ttlMs, force: args.force, families: selected }, load);
+    const result = await withCache({ ttlMs: args.ttlMs, force: args.force, families: requestedFamilies }, load);
     report = result.report;
     cached = result.cached;
     ageMs = result.ageMs;

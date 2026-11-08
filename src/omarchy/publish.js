@@ -29,6 +29,27 @@ export function resolveOmarchyDir(options = {}) {
 }
 
 /**
+ * Compare two serialized Omarchy records ignoring `updatedAt` so identical
+ * quota snapshots do not trigger redundant disk writes and `inotify` reloads.
+ *
+ * @param {string} existingRaw
+ * @param {Record<string, unknown>} nextRecord
+ * @returns {boolean}
+ */
+function recordsEqualIgnoringTimestamp(existingRaw, nextRecord) {
+  try {
+    const existing = JSON.parse(existingRaw);
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) return false;
+    return (
+      JSON.stringify({ ...existing, updatedAt: "" }) ===
+      JSON.stringify({ ...nextRecord, updatedAt: "" })
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * @param {string} dir
  * @param {string} id
  * @param {Record<string, unknown>} record
@@ -39,7 +60,8 @@ function writeRecord(dir, id, record) {
   const content = `${JSON.stringify(record)}\n`;
   if (existsSync(target)) {
     try {
-      if (readFileSync(target, "utf-8") === content) {
+      const existingRaw = readFileSync(target, "utf-8");
+      if (existingRaw === content || recordsEqualIgnoringTimestamp(existingRaw, record)) {
         return target;
       }
     } catch {}

@@ -39,6 +39,9 @@ export function skippedFamilies(env, dir) {
     if (existsSync(join(targetDir, "claude.json"))) {
       skip.add("claude");
     }
+    if (existsSync(join(targetDir, "codex.json"))) {
+      skip.add("codex");
+    }
   } catch {}
   return skip;
 }

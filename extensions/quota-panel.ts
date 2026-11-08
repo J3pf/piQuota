@@ -679,6 +679,7 @@ function renderPanel(report: QuotaReport, theme: Theme): string[] {
     if (provider.plan) meta.push(`plan ${provider.plan}`);
     // Two stores can back Claude, and this is the one place that says which.
     if (provider.sourceKind === "claude-code") meta.push("Claude Code CLI");
+    if (provider.sourceKind === "codex-cli") meta.push("Codex CLI");
     if (provider.expiresInMin !== null && provider.expiresInMin <= 120) {
       meta.push(
         provider.expiresInMin < 0

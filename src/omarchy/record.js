@@ -29,9 +29,11 @@ export const SCHEMA_VERSION = 1;
  */
 const LOGIN_HINT = {
   claude: "Run `claude` once, or `/login anthropic` in Pi, to restore usage.",
-  codex: "Run `/login openai-codex` in Pi to restore usage.",
+  codex: "Run `/login openai-codex` in Pi (or `codex` CLI) to restore usage.",
   antigravity: "Run `/login antigravity` in Pi to restore usage.",
-  "opencode-go": "Run `piquota auth opencode` to restore usage.",
+  "opencode-go": "Reconnect OpenCode in Pi (`/login opencode-go`) or run `piquota auth opencode`.",
+  copilot: "Run `/login github-copilot` in Pi to restore usage.",
+  openrouter: "Update your OpenRouter API key in Pi (`/login openrouter`).",
 };
 
 const HELP_MAX = 200;
@@ -149,6 +151,8 @@ const SHORT_NAMES = {
   "github-actions": "GH Actions",
   antigravity: "Agy",
   "opencode-go": "OP-Go",
+  copilot: "Copilot",
+  openrouter: "OpenRouter",
 };
 
 /**
@@ -210,7 +214,10 @@ export function buildRecord(provider, options = {}) {
       authHelpText: status.authHelpText,
       hasLocalStats: false,
       hasPromptStats: false,
-      updatedAt: new Date(now).toISOString(),
+      updatedAt:
+        typeof provider.updatedAt === "string" && provider.updatedAt
+          ? provider.updatedAt
+          : new Date(now).toISOString(),
     },
   };
 }

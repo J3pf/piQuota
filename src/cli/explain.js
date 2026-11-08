@@ -3,7 +3,7 @@
  */
 
 import { describeClaudeCodeSource } from "../auth/claude-code-auth.js";
-import { describeStore, loadPiCredentials, resolveAuthPaths } from "../auth/pi-auth.js";
+import { describeStore, loadCodexCliCredential, loadPiCredentials, resolveAuthPaths } from "../auth/pi-auth.js";
 import { describeCache, resolveCachePath } from "../cache.js";
 import { FAMILIES } from "../engine.js";
 import { redact } from "../http.js";
@@ -70,12 +70,19 @@ export function explainLines(families) {
   const loaded = loadPiCredentials({});
   const counts = new Map();
   for (const credential of loaded.credentials) counts.set(credential.family, (counts.get(credential.family) ?? 0) + 1);
-  lines.push("  credentials: " + FAMILIES.map((family) => `${family}=${counts.get(family) ?? 0}`).join(" "));
+  const codexCli = (counts.get("codex") ?? 0) === 0 ? loadCodexCliCredential({}) : null;
+  if (codexCli) counts.set("codex", 1);
+  const allFamilies = [...FAMILIES, "copilot", "openrouter"];
+  lines.push("  credentials: " + allFamilies.map((family) => `${family}=${counts.get(family) ?? 0}`).join(" "));
+  if (codexCli) {
+    lines.push(`  Codex CLI fallback store: ${codexCli.source} (read-only, refresh_token never read)`);
+  }
   lines.push("  fields read from auth.json: type, access, refresh, expires, accountId, projectId, email, key");
   lines.push("  derived from the Codex JWT (payload only): chatgpt_account_id, chatgpt_plan_type, email");
 
   const cookie = resolveCookie({});
-  lines.push(`  opencode.ai cookie: ${cookie.found ? `found via ${cookie.origin} (${cookie.detail})` : `not found (${cookie.detail})`}`);
+  lines.push("  opencode-go primary: GET https://opencode.ai/zen/go/v1/usage (Bearer API key)");
+  lines.push(`  opencode.ai cookie (fallback): ${cookie.found ? `found via ${cookie.origin} (${cookie.detail})` : `not found (${cookie.detail})`}`);
   // Claude has two sources, and which one is in use is the single most useful
   // diagnostic for a provider that answers 400 or "not configured".
   const claudeCode = describeClaudeCodeSource({});
