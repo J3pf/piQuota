@@ -12,7 +12,7 @@
  *                                the rail slot gentle-pi needs to paint the quota card
  */
 
-import { clearCache, withCache } from "../src/cache.js";
+import { clearCache, readCache, withCache } from "../src/cache.js";
 import { parseArgs } from "../src/cli/args.js";
 import { runAuthCommand } from "../src/cli/commands/auth.js";
 import { runGentlePiCommand } from "../src/cli/commands/gentle-pi.js";
@@ -156,6 +156,15 @@ async function main() {
 
   const { report: reportWithHistory, restored } = mergeLastGood(report, {});
   report = reportWithHistory;
+  if (args.syncOmarchy) {
+    try {
+      const omarchySource = requestedFamilies ? (readCache({})?.report ?? report) : report;
+      const mergedForOmarchy = mergeLastGood(omarchySource, {}).report;
+      await runOmarchyCommand({ load: async () => mergedForOmarchy, quiet: true });
+    } catch {
+      // Best-effort background Omarchy sync; never fail the primary CLI output.
+    }
+  }
   if (restored.length > 0 && !args.json && !args.compact && !args.status) {
     process.stderr.write(`note: showing last known values for ${restored.join(", ")}\n`);
   }

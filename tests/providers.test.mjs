@@ -440,8 +440,13 @@ test("antigravity: caches discovered projectId in state directory so subsequent 
   const { fetchQuota } = await import("../src/providers/antigravity.js");
   const home = mkdtempSync(join(tmpdir(), "pi-quota-agy-proj-"));
   let loadCodeAssistCalls = 0;
+  let dailyCalls = 0;
   const fetchFn = async (url) => {
     const u = String(url);
+    if (u.startsWith("https://daily-cloudcode-pa.googleapis.com")) {
+      dailyCalls += 1;
+      return jsonResponse({}, { status: 503 });
+    }
     if (u.includes("loadCodeAssist")) {
       loadCodeAssistCalls += 1;
       return jsonResponse({ cloudaicompanionProject: "cached-proj-12345678" });
@@ -471,8 +476,10 @@ test("antigravity: caches discovered projectId in state directory so subsequent 
   const first = await fetchQuota(credential, { now: 1_800_000_000_000, fetchFn, home, env: {} });
   assert.equal(first.ok, true);
   assert.equal(loadCodeAssistCalls, 1);
+  assert.equal(dailyCalls, 1);
 
   const second = await fetchQuota(credential, { now: 1_800_000_000_000, fetchFn, home, env: {} });
   assert.equal(second.ok, true);
   assert.equal(loadCodeAssistCalls, 1, "second call must use cached projectId without calling loadCodeAssist");
+  assert.equal(dailyCalls, 1, "second call must prioritize the cached working cloudBase without retrying the failing daily host");
 });

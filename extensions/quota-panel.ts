@@ -995,28 +995,17 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
     return existsSync(join(stateBase, "omarchy")) || existsSync(join(home, ".config", "omarchy"));
   }
 
-  async function syncOmarchyInBackground(): Promise<void> {
-    if (!isOmarchyPresent()) return;
-    const cli = resolveCliPath();
-    if (!cli) return;
-    try {
-      const runner = /node(\.exe)?$/i.test(process.execPath) ? process.execPath : "node";
-      await pi.exec(runner, [cli, "omarchy"], { timeout: EXEC_TIMEOUT_MS });
-    } catch {
-      // Best-effort background sync; never clobber lastError.
-    }
-  }
-
   async function refresh(ctx: UiContext, force: boolean, onlyFamily?: string | null): Promise<void> {
     if (refreshing) return;
     refreshing = true;
     try {
-      const cliArgs =
+      const baseArgs =
         onlyFamily && report
           ? ["--json", onlyFamily, "--force"]
           : force
             ? ["--json", "--force"]
             : ["--json"];
+      const cliArgs = isOmarchyPresent() ? [...baseArgs, "--sync-omarchy"] : baseArgs;
       const next = await runCli(cliArgs);
       if (disposed) return;
       if (next) {
@@ -1054,7 +1043,6 @@ export default function quotaPanelExtension(pi: ExtensionAPI): void {
           report = next;
         }
         paintUi(ctx);
-        void syncOmarchyInBackground();
       }
     } finally {
       refreshing = false;

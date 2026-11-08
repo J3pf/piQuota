@@ -69,6 +69,11 @@ test("--box enables the compact box widget", () => {
   const args = parseArgs(["--box"]);
   assert.equal(args.box, true);
   assert.deepEqual(args.unknown, []);
+
+  const syncArgs = parseArgs(["--json", "--sync-omarchy"]);
+  assert.equal(syncArgs.json, true);
+  assert.equal(syncArgs.syncOmarchy, true);
+  assert.deepEqual(syncArgs.unknown, []);
 });
 
 test("a genuinely unknown flag is collected for the caller to reject", () => {

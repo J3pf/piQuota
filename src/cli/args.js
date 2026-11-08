@@ -69,6 +69,7 @@ export function parseArgs(argv, defaults = {}) {
     version: false,
     status: false,
     box: false,
+    syncOmarchy: false,
     clearCache: false,
     ttlMs: defaults.defaultTtlMs ?? 60_000,
     timeoutMs: defaults.defaultTimeoutMs ?? 15_000,
@@ -138,6 +139,9 @@ export function parseArgs(argv, defaults = {}) {
         break;
       case "--box":
         parsed.box = true;
+        break;
+      case "--sync-omarchy":
+        parsed.syncOmarchy = true;
         break;
       case "--clear-cache":
         parsed.clearCache = true;

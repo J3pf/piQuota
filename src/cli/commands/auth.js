@@ -5,7 +5,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
-import { describeStore, resolveAuthPaths } from "../../auth/pi-auth.js";
+import { describeClaudeCodeSource } from "../../auth/claude-code-auth.js";
+import { describeStore, loadCodexCliCredential, loadPiCredentials, resolveAuthPaths } from "../../auth/pi-auth.js";
 import { discoverCookieStores, findCookie } from "../../browser/cookies.js";
 import { humanReset } from "../../model.js";
 import {
@@ -203,8 +204,20 @@ export async function authStatus() {
     const store = describeStore(path);
     out(`  pi store   ${path} (${store.sizeBytes ?? "?"} bytes)`);
   }
+  const loaded = loadPiCredentials({});
+  if (loaded.credentials.length > 0) {
+    out(`  pi entries ${loaded.credentials.map((c) => c.family).join(", ")}`);
+  }
+  const claudeCode = describeClaudeCodeSource({});
+  out(`  claude cli ${claudeCode.ok && claudeCode.path ? `${claudeCode.path} (${claudeCode.plan ?? "oauth"})` : "not found"}`);
+  const codexCli = loadCodexCliCredential({});
+  out(`  codex cli  ${codexCli ? `${codexCli.source} (${codexCli.planType ?? "oauth"})` : "not found"}`);
+  const hasOpenCodeKey = loaded.credentials.some((c) => c.family === "opencode-go" && Boolean(c.key || c.access)) || Boolean(process.env.OPENCODE_API_KEY);
   const cookie = resolveCookie({});
-  out(`  opencode   ${cookie.found ? `session via ${cookie.origin} — ${cookie.detail}` : `no session — ${cookie.detail}`}`);
+  out(
+    `  opencode   ${hasOpenCodeKey ? "API key configured (GET /zen/go/v1/usage)" : "no API key"}` +
+      ` · ${cookie.found ? `cookie via ${cookie.origin} — ${cookie.detail}` : `no cookie (${cookie.detail})`}`,
+  );
   const workspace = configPaths({}).workspacePath;
   out(`  workspace  ${existsSync(workspace) ? "cached" : "not cached"}`);
 

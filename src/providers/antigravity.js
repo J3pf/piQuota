@@ -63,27 +63,33 @@ function resolveProjectCachePath(options = {}) {
 /**
  * @param {string | undefined} identity
  * @param {{ env?: Record<string, string | undefined>, home?: string, fetchFn?: typeof fetch }} [options]
- * @returns {string | null}
+ * @returns {{ projectId: string | null, base: string | null }}
  */
-function readCachedProjectId(identity, options = {}) {
-  if (!identity) return null;
+function readCachedProjectInfo(identity, options = {}) {
+  if (!identity) return { projectId: null, base: null };
   const cachePath = resolveProjectCachePath(options);
-  if (!cachePath || !existsSync(cachePath)) return null;
+  if (!cachePath || !existsSync(cachePath)) return { projectId: null, base: null };
   try {
     const parsed = record(JSON.parse(readFileSync(cachePath, { encoding: "utf-8", flag: "r" })));
-    return stringValue(parsed?.[identity]);
+    const raw = parsed?.[identity];
+    if (typeof raw === "string") return { projectId: stringValue(raw), base: null };
+    const entry = record(raw);
+    return {
+      projectId: stringValue(entry?.projectId),
+      base: stringValue(entry?.base),
+    };
   } catch {
-    return null;
+    return { projectId: null, base: null };
   }
 }
 
 /**
  * @param {string | undefined} identity
- * @param {string | null} projectId
+ * @param {{ projectId?: string | null, base?: string | null }} info
  * @param {{ env?: Record<string, string | undefined>, home?: string, fetchFn?: typeof fetch }} [options]
  */
-function writeCachedProjectId(identity, projectId, options = {}) {
-  if (!identity || !projectId) return;
+function writeCachedProjectInfo(identity, info, options = {}) {
+  if (!identity || (!info.projectId && !info.base)) return;
   const cachePath = resolveProjectCachePath(options);
   if (!cachePath) return;
   let tmp = "";
@@ -99,8 +105,13 @@ function writeCachedProjectId(identity, projectId, options = {}) {
         current = {};
       }
     }
-    if (current[identity] === projectId) return;
-    current[identity] = projectId;
+    const existing = record(current[identity]);
+    const prevProjectId = typeof current[identity] === "string" ? stringValue(current[identity]) : stringValue(existing?.projectId);
+    const prevBase = stringValue(existing?.base);
+    const nextProjectId = info.projectId ?? prevProjectId ?? null;
+    const nextBase = info.base ?? prevBase ?? null;
+    if (existing && prevProjectId === nextProjectId && prevBase === nextBase) return;
+    current[identity] = { projectId: nextProjectId, base: nextBase };
     tmp = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
     renameSync(tmp, cachePath);
@@ -236,17 +247,22 @@ export async function fetchQuota(credential, options = {}) {
       error: `Antigravity access token refresh failed: ${freshness.error}`,
     });
   }
-  let projectId = credential.projectId ?? readCachedProjectId(credential.identity, options);
+  const cachedInfo = readCachedProjectInfo(credential.identity, options);
+  let projectId = credential.projectId ?? cachedInfo.projectId;
+  const orderedBases =
+    cachedInfo.base && CLOUD_CODE_BASES.includes(cachedInfo.base)
+      ? [cachedInfo.base, ...CLOUD_CODE_BASES.filter((b) => b !== cachedInfo.base)]
+      : CLOUD_CODE_BASES;
 
   /** @type {string | null} */
   let lastError = null;
   let authFailed = false;
 
-  for (const cloudBase of CLOUD_CODE_BASES) {
+  for (const cloudBase of orderedBases) {
     if (!projectId && account.access) {
       projectId = await resolveProjectId(account.access, cloudBase, fetchFn, options.timeoutMs);
       if (projectId) {
-        writeCachedProjectId(credential.identity, projectId, options);
+        writeCachedProjectInfo(credential.identity, { projectId, base: cloudBase }, options);
       }
     }
     if (!projectId) {
@@ -308,6 +324,8 @@ export async function fetchQuota(credential, options = {}) {
       lastError = "Antigravity quota response contained no buckets (free tier may expose none for this account)";
       continue;
     }
+
+    writeCachedProjectInfo(credential.identity, { projectId, base: cloudBase }, options);
 
     return {
       ...base,
