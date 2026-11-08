@@ -4,13 +4,14 @@ Instructions, architecture rules, and testing guidelines for AI coding agents wo
 
 ## Project Overview
 
-`piQuota` is a standalone, zero-dependency quota monitor for AI providers configured in the [Pi Coding Agent](https://github.com/earendil-works/pi) ecosystem. It aggregates real-time quota, reset countdowns, and subscription tiers across multiple AI providers (Claude, OpenAI Codex, Antigravity, OpenCode Go) across multiple surfaces:
+`piQuota` is a standalone, zero-dependency quota monitor for AI providers configured in the [Pi Coding Agent](https://github.com/earendil-works/pi) ecosystem. It aggregates real-time quota, reset countdowns, and subscription tiers across multiple AI providers (Claude, OpenAI Codex, Antigravity, OpenCode Go, GitHub Copilot, OpenRouter, and GitHub Actions) across multiple surfaces:
 - **Terminal CLI**: `piquota` (boxed widget, compact line, status, JSON).
 - **Pi TUI Extension**: `/quota`, custom editor rail widget, and gentle-pi sidebar integration.
+- **Omarchy Bar Panel**: `piquota omarchy` (and single-process `--sync-omarchy`) publishing `pi-*.json` usage records and provider SVG icons for Omarchy's desktop Agents bar.
 - **JSON & External Integrations**: `piquota --json` structured quota feed for `rp-host` and automation tools.
 
 ### Core Philosophy
-1. **Credentials Pi Already Owns**: Do not duplicate authentication or invent new login workflows when credentials already exist in `~/.pi/agent/auth.json` or `~/.claude/.credentials.json`.
+1. **Credentials Pi Already Owns**: Do not duplicate authentication or invent new login workflows when credentials already exist in `~/.pi/agent/auth.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`, or `~/.local/share/opencode/auth.json`.
 2. **Strict Read-Only Guarantee**: Never mutate credential files on disk.
 3. **Zero Runtime Dependencies**: Written entirely in vanilla ES Modules targeting Node.js `>=20.0.0` using native `node:sqlite`, `node:fs`, and global `fetch`.
 
@@ -66,18 +67,18 @@ Any modification to this codebase MUST uphold these non-negotiable guarantees:
 
 1. **Read-Only Credential Access**:
    - `~/.pi/agent/auth.json` is opened strictly with `flag: "r"`. It must never be written, synced, or modified.
-   - `~/.claude/.credentials.json` is opened read-only.
+   - `~/.claude/.credentials.json`, `~/.codex/auth.json`, and `~/.local/share/opencode/auth.json` are opened strictly read-only.
 2. **Token Refresh Invariants**:
    - **Antigravity**: Access tokens may be refreshed in memory using Google's public client, because Google refresh tokens do not rotate. The refreshed token must NEVER be written back to disk.
    - **Claude and Codex**: NEVER refresh access tokens. Both Anthropic and OpenAI rotate refresh tokens; refreshing a token would invalidate the credentials owned by external CLI tools.
-   - **Claude Code Store**: The refresh token from `~/.claude/.credentials.json` is never loaded into memory.
+   - **Claude Code & Codex CLI Stores**: The refresh token from `~/.claude/.credentials.json` or `~/.codex/auth.json` is never loaded into memory.
 3. **Zero Secret Leakage**:
    - Never print, log, cache, or transmit tokens, refresh tokens, session keys, or API keys.
    - Redact email addresses and identity markers in exported JSON artifacts via `src/http.js:redact`.
 4. **Filesystem Boundaries**:
    - Caches and state files are restricted to `~/.cache/pi-quota/` and `~/.local/state/pi-quota/`.
    - File writes must be atomic (write to temporary file, then `renameSync`).
-   - Explicit opt-in exception: `piquota omarchy` may write (and remove stale) `pi-*.json` records, and only those, in Omarchy's agents usage directory (`${XDG_STATE_HOME:-~/.local/state}/omarchy/agents/usage/` or `PI_QUOTA_OMARCHY_DIR`), atomically. Records contain plan names, percentages, window labels and reset times, never tokens or account identifiers. Omarchy's own records are never touched.
+   - Explicit opt-in exception: `piquota omarchy` (and `--sync-omarchy`) may write (and remove stale) `pi-*.json` records in Omarchy's agents usage directory (`${XDG_STATE_HOME:-~/.local/state}/omarchy/agents/usage/` or `PI_QUOTA_OMARCHY_DIR`), atomically, and additively install missing provider SVG icons (`opencode-go.svg`, `copilot.svg`, `openrouter.svg`) into `omarchy-bar` agent plugins. Records contain plan names, percentages, window labels, reset times, and prepaid USD balances (`balance`), never tokens or account identifiers. Omarchy's own records (`claude.json`, `codex.json`) are never touched.
 5. **Graceful Degradation**:
    - Provider failures (network timeouts, 401s, 429 rate limits, malformed payloads) must degrade gracefully into typed error states (`isTransient`, `isAuthFailure`, `isThrottled`, `notConfigured`), never throwing unhandled exceptions that crash the CLI or the Pi TUI.
 

@@ -44,7 +44,9 @@ shuvquota, and it never writes to a credential file.
   | --- | --- |
   | `~/.cache/pi-quota/usage.json` | the report cache |
   | `~/.cache/pi-quota/last-good.json`, `backoff.json` | sticky snapshots and throttle state |
+  | `~/.local/state/pi-quota/antigravity-projects.json` | cached Cloud Code project IDs and preferred endpoints |
   | `${XDG_CONFIG_HOME:-~/.config}/pi-quota/opencode-cookie` | only after `piquota auth opencode`, mode `600` |
+  | `${XDG_STATE_HOME:-~/.local/state}/omarchy/agents/usage/pi-*.json` | only when `piquota omarchy` or `--sync-omarchy` runs |
   | `~/.pi/agent/extensions/*.ts` | only by `install.sh` |
 
 ## Status, verified against the live APIs
@@ -128,7 +130,7 @@ the `read:org`, `repo`, and `workflow` scopes may be required.
 ### 1-Line Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/J3fp/piQuota/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/J3pf/piQuota/master/install.sh | bash
 ```
 
 ### Install the Pi extension from npm
@@ -149,14 +151,14 @@ the TUI.
 | Omarchy sync while Pi is closed | no | yes, with `--omarchy-timer` |
 
 If you live inside Pi and use Omarchy, the npm route covers it: when an Omarchy
-directory is present, the extension runs `piquota omarchy` on quota refreshes so
-the bar fills without extra setup. Choose `install.sh` when you want the CLI in a
-terminal, or background sync while Pi is not running.
+directory is present, the extension runs `piquota --json --sync-omarchy` on quota
+refreshes so the bar fills without extra setup. Choose `install.sh` when you want
+the CLI in a terminal, or background sync while Pi is not running.
 
 ### Manual Install / Development
 
 ```bash
-git clone https://github.com/J3fp/piQuota.git
+git clone https://github.com/J3pf/piQuota.git
 cd piQuota
 ./install.sh              # --link for development, --uninstall to remove
 ```
@@ -240,16 +242,22 @@ right rail instead, under Status and TODO, and the above-editor box stays quiet 
 the numbers are not shown twice. See [the rail slot](#the-gentle-pi-rail-slot).
 
 * each name is painted with its **own brand colour** — Claude `#D97757`, Codex
-  `#10A37F`, Antigravity `#4285F4`, OpenCode `#007AFF`;
+  `#10A37F`, Antigravity `#4285F4`, OpenCode `#007AFF`, Copilot `#6E40C9`,
+  OpenRouter `#6366F1`;
+* the active session's model family is highlighted with a `▸` marker;
 * the numbers are **used**, not remaining, and the semaphore is both colour and
   shape (`○` plenty left → `◔` → `◕` → `●` nearly spent), so it still reads on a
   colourblind or mono terminal;
+* when a window is burning significantly faster than linear elapsed time across its
+  reset cycle, a burn-rate pace indicator (`↑`) appears next to the percentage;
 * **only active providers are shown:** if you only have Claude and Codex configured
   in Pi, only Claude and Codex appear in the line (no empty warning icons for
   providers you don't use);
 * `NO_COLOR` / `TERM=dumb` drops the colours and keeps the glyphs;
-* the window shown is the **shortest** one (5h first), and `/quota` expands every
-  window with a used-fraction bar and the reset countdown.
+* the window shown is the **shortest** one (5h first), promoted to the weekly
+  window with an explicit `7d` badge when weekly usage reaches `>= 60%` and exceeds
+  the 5h window; `/quota` expands every window with a used-fraction bar and the
+  reset countdown.
 
 Pi's theme only exposes a fixed palette, so brand colours are emitted as
 truecolor ANSI. Widget string arrays are wrapped in `Text` components by Pi,
