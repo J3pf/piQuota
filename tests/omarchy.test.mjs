@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { nativeFamilies, runOmarchyCommand, skippedFamilies } from "../src/cli/commands/omarchy.js";
+import { nativeFamilies, preSkippedFamilies, runOmarchyCommand, skippedFamilies } from "../src/cli/commands/omarchy.js";
 import { publishRecords, resolveOmarchyDir, syncOmarchyAssets } from "../src/omarchy/publish.js";
 import { buildRecord, buildRecords } from "../src/omarchy/record.js";
 
@@ -330,6 +330,9 @@ test("syncOmarchyAssets copies SVG marks into Omarchy plugin asset directories i
     const pluginDir = join(home, ".config", "omarchy", "plugins", "my.agents");
     mkdirSync(pluginDir, { recursive: true });
     writeFileSync(join(pluginDir, "manifest.json"), "{}");
+    const unrelatedDir = join(home, ".config", "omarchy", "plugins", "luisc.clock");
+    mkdirSync(unrelatedDir, { recursive: true });
+    writeFileSync(join(unrelatedDir, "manifest.json"), "{}");
 
     const copied = syncOmarchyAssets({ home });
     assert.ok(copied.length > 0);
@@ -341,6 +344,7 @@ test("syncOmarchyAssets copies SVG marks into Omarchy plugin asset directories i
     assert.ok(existsSync(join(pluginDir, "assets", "pi-copilot.svg")));
     assert.ok(existsSync(join(pluginDir, "assets", "openrouter.svg")));
     assert.ok(existsSync(join(pluginDir, "assets", "pi-openrouter.svg")));
+    assert.equal(existsSync(join(unrelatedDir, "assets")), false, "unrelated plugins like clock are not polluted with agent SVGs");
 
     // Idempotent: identical files must not be touched to prevent triggering Omarchy shell reload watches
     const secondPass = syncOmarchyAssets({ home });
@@ -355,8 +359,20 @@ test("coexisting native codex.json or claude.json disambiguates Pi tab names and
   try {
     writeFileSync(join(dir, "codex.json"), '{"id":"codex","name":"Codex","limits":[]}');
     writeFileSync(join(dir, "claude.json"), '{"id":"claude","name":"Claude Code","limits":[]}');
+    const fakeAuth = join(dir, "auth.json");
+    writeFileSync(fakeAuth, '{"anthropic":{"access":"tok"}}');
 
     assert.deepEqual([...nativeFamilies(dir, {})].sort(), ["claude", "codex"]);
+    assert.deepEqual(
+      [...preSkippedFamilies({ PI_QUOTA_AUTH_PATH: join(dir, "missing.json") }, dir)],
+      ["claude"],
+      "without a distinct Pi anthropic credential, claude is pre-skipped before network collection",
+    );
+    assert.deepEqual(
+      [...preSkippedFamilies({ PI_QUOTA_AUTH_PATH: fakeAuth }, dir)],
+      [],
+      "with a distinct Pi anthropic credential and empty claude.json limits, claude is collected",
+    );
     // When Pi's claude has live windows and claude.json has empty limits, claude is not skipped
     const report = {
       providers: [

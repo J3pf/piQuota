@@ -8,7 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,23 +81,48 @@ function writeRecord(dir, id, record) {
   return { path: target, created: !existed };
 }
 
+/** @type {Array<{ file: string, buf: Buffer }> | null} */
+let cachedSvgAssets = null;
+
 /**
- * Copy a file only if the target does not exist or its content differs.
+ * Load bundled SVG assets from `src/omarchy/assets/` once per process.
+ *
+ * @returns {Array<{ file: string, buf: Buffer }>}
+ */
+function loadBundledSvgAssets() {
+  if (cachedSvgAssets) return cachedSvgAssets;
+  const assetsSrc = fileURLToPath(new URL("assets", import.meta.url));
+  if (!existsSync(assetsSrc)) return [];
+  const entries = [];
+  try {
+    for (const file of readdirSync(assetsSrc)) {
+      if (!file.endsWith(".svg")) continue;
+      entries.push({ file, buf: readFileSync(join(assetsSrc, file)) });
+    }
+    cachedSvgAssets = entries;
+  } catch {}
+  return entries;
+}
+
+/**
+ * Copy a buffer only if the target does not exist or its content differs.
  * This is critical when writing to directories watched by inotify, such as
  * Omarchy's plugins directory, where redundant writes trigger full shell reloads.
  *
- * @param {string} srcPath
+ * @param {Buffer} srcBuf
  * @param {string} dstPath
  * @returns {boolean} Whether the file was written.
  */
-function copyIfChanged(srcPath, dstPath) {
+function writeBufferIfChanged(srcBuf, dstPath) {
   const tempPath = join(dirname(dstPath), `.${basename(dstPath)}.${process.pid}.${Date.now()}.tmp`);
   try {
-    const srcBuf = readFileSync(srcPath);
-    if (existsSync(dstPath)) {
-      const dstBuf = readFileSync(dstPath);
-      if (srcBuf.equals(dstBuf)) return false;
-    }
+    try {
+      const dstStat = statSync(dstPath);
+      if (dstStat.size === srcBuf.length) {
+        const dstBuf = readFileSync(dstPath);
+        if (srcBuf.equals(dstBuf)) return false;
+      }
+    } catch {}
     writeFileSync(tempPath, srcBuf, { mode: 0o644 });
     renameSync(tempPath, dstPath);
     return true;
@@ -110,7 +135,7 @@ function copyIfChanged(srcPath, dstPath) {
 }
 
 /**
- * Synchronize provider SVG icons into Omarchy plugin assets directories if present.
+ * Synchronize provider SVG icons into Omarchy agent/stats plugin assets directories if present.
  *
  * @param {{ env?: Record<string, string | undefined>, home?: string }} [options]
  * @returns {string[]} Paths of written assets.
@@ -121,12 +146,13 @@ export function syncOmarchyAssets(options = {}) {
   const pluginsDir = join(home, ".config", "omarchy", "plugins");
   if (!existsSync(pluginsDir)) return [];
 
-  const assetsSrc = fileURLToPath(new URL("assets", import.meta.url));
-  if (!existsSync(assetsSrc)) return [];
+  const svgAssets = loadBundledSvgAssets();
+  if (svgAssets.length === 0) return [];
 
   const copied = [];
   try {
     for (const plugin of readdirSync(pluginsDir)) {
+      if (!/agent|stat|quota|usage/i.test(plugin)) continue;
       const pluginDir = join(pluginsDir, plugin);
       const manifestPath = join(pluginDir, "manifest.json");
       if (!existsSync(manifestPath)) continue;
@@ -135,13 +161,11 @@ export function syncOmarchyAssets(options = {}) {
         mkdirSync(targetAssetsDir, { recursive: true });
       }
 
-      for (const file of readdirSync(assetsSrc)) {
-        if (!file.endsWith(".svg")) continue;
-        const srcPath = join(assetsSrc, file);
+      for (const { file, buf } of svgAssets) {
         const dstPath = join(targetAssetsDir, file);
         const piDstPath = join(targetAssetsDir, `pi-${file}`);
-        if (copyIfChanged(srcPath, dstPath)) copied.push(dstPath);
-        if (copyIfChanged(srcPath, piDstPath)) copied.push(piDstPath);
+        if (writeBufferIfChanged(buf, dstPath)) copied.push(dstPath);
+        if (writeBufferIfChanged(buf, piDstPath)) copied.push(piDstPath);
       }
     }
   } catch {}

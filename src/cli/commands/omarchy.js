@@ -6,12 +6,62 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { redact } from "../../http.js";
 import { publishRecords, resolveOmarchyDir } from "../../omarchy/publish.js";
 import { buildRecords } from "../../omarchy/record.js";
 import { err, out } from "../output.js";
+
+/**
+ * Inspect Omarchy's usage directory once for native `claude.json` and `codex.json`
+ * files and whether each carries non-empty rate-limit windows.
+ *
+ * @param {string} targetDir
+ * @returns {{ native: Set<string>, hasLimits: Set<string>, emptyLimits: Set<string> }}
+ */
+function inspectNativeRecords(targetDir) {
+  const native = new Set();
+  const hasLimits = new Set();
+  const emptyLimits = new Set();
+  try {
+    for (const family of ["claude", "codex"]) {
+      const filePath = join(targetDir, `${family}.json`);
+      if (!existsSync(filePath)) continue;
+      native.add(family);
+      try {
+        const parsed = JSON.parse(readFileSync(filePath, "utf-8"));
+        if (Array.isArray(parsed?.limits)) {
+          if (parsed.limits.length > 0) {
+            hasLimits.add(family);
+          } else {
+            emptyLimits.add(family);
+          }
+        }
+      } catch {}
+    }
+  } catch {}
+  return { native, hasLimits, emptyLimits };
+}
+
+/**
+ * Check whether `~/.pi/agent/auth.json` (or `PI_QUOTA_AUTH_PATH`) contains a distinct
+ * `anthropic` entry that Omarchy's native Claude collector does not inspect.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {boolean}
+ */
+function hasPiAnthropicCredential(env = process.env) {
+  try {
+    const authPath = env.PI_QUOTA_AUTH_PATH || join(env.HOME || homedir(), ".pi", "agent", "auth.json");
+    if (!existsSync(authPath)) return false;
+    const parsed = JSON.parse(readFileSync(authPath, { encoding: "utf-8", flag: "r" }));
+    return Boolean(parsed && typeof parsed === "object" && parsed.anthropic);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Detect which families (`claude`, `codex`) already have a native `<family>.json`
@@ -23,16 +73,39 @@ import { err, out } from "../output.js";
  * @returns {Set<string>}
  */
 export function nativeFamilies(dir, env = process.env) {
-  const native = new Set();
   const targetDir = dir ?? resolveOmarchyDir({ env });
-  try {
-    for (const family of ["claude", "codex"]) {
-      if (existsSync(join(targetDir, `${family}.json`))) {
-        native.add(family);
-      }
+  return inspectNativeRecords(targetDir).native;
+}
+
+/**
+ * Resolve families that can be skipped BEFORE network collection in `piquota omarchy`
+ * so `collectQuota()` never makes redundant HTTP requests for providers Omarchy already covers.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @param {string} [dir]
+ * @returns {Set<string>}
+ */
+export function preSkippedFamilies(env = process.env, dir) {
+  if (env.PI_QUOTA_OMARCHY_SKIP !== undefined) {
+    return new Set(
+      String(env.PI_QUOTA_OMARCHY_SKIP)
+        .split(",")
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean),
+    );
+  }
+  const targetDir = dir ?? resolveOmarchyDir({ env });
+  const { native, hasLimits, emptyLimits } = inspectNativeRecords(targetDir);
+  const skip = new Set();
+  if (hasLimits.has("codex")) {
+    skip.add("codex");
+  }
+  if (native.has("claude")) {
+    if (!emptyLimits.has("claude") || !hasPiAnthropicCredential(env)) {
+      skip.add("claude");
     }
-  } catch {}
-  return native;
+  }
+  return skip;
 }
 
 /**
@@ -47,9 +120,10 @@ export function nativeFamilies(dir, env = process.env) {
  * @param {Record<string, string | undefined>} env
  * @param {string} [dir]
  * @param {import("../../model.js").QuotaResult[]} [providers]
+ * @param {{ native: Set<string>, hasLimits: Set<string>, emptyLimits: Set<string> }} [inspected]
  * @returns {Set<string>}
  */
-export function skippedFamilies(env, dir, providers) {
+export function skippedFamilies(env, dir, providers, inspected) {
   if (env.PI_QUOTA_OMARCHY_SKIP !== undefined) {
     return new Set(
       String(env.PI_QUOTA_OMARCHY_SKIP)
@@ -60,29 +134,18 @@ export function skippedFamilies(env, dir, providers) {
   }
   const skip = new Set();
   const targetDir = dir ?? resolveOmarchyDir({ env });
-  try {
-    const claudePath = join(targetDir, "claude.json");
-    if (existsSync(claudePath)) {
-      let emptyNativeLimits = false;
-      try {
-        const parsed = JSON.parse(readFileSync(claudePath, "utf-8"));
-        emptyNativeLimits = Array.isArray(parsed?.limits) && parsed.limits.length === 0;
-      } catch {}
-      const piClaudeHealthy =
-        Array.isArray(providers) &&
-        providers.some((p) => p?.family === "claude" && p.ok && Array.isArray(p.windows) && p.windows.length > 0);
-      if (!emptyNativeLimits || !piClaudeHealthy) {
-        skip.add("claude");
-      }
+  const { native, hasLimits, emptyLimits } = inspected ?? inspectNativeRecords(targetDir);
+  if (native.has("claude")) {
+    const piClaudeHealthy =
+      Array.isArray(providers) &&
+      providers.some((p) => p?.family === "claude" && p.ok && Array.isArray(p.windows) && p.windows.length > 0);
+    if (!emptyLimits.has("claude") || !piClaudeHealthy) {
+      skip.add("claude");
     }
-    const codexPath = join(targetDir, "codex.json");
-    if (existsSync(codexPath)) {
-      const parsed = JSON.parse(readFileSync(codexPath, "utf-8"));
-      if (Array.isArray(parsed?.limits) && parsed.limits.length > 0) {
-        skip.add("codex");
-      }
-    }
-  } catch {}
+  }
+  if (hasLimits.has("codex")) {
+    skip.add("codex");
+  }
   return skip;
 }
 
@@ -100,11 +163,12 @@ export async function runOmarchyCommand(options) {
   }
 
   const env = options.env ?? process.env;
-  const skip = skippedFamilies(env, options.dir, report.providers);
-  const native = nativeFamilies(options.dir, env);
+  const targetDir = options.dir ?? resolveOmarchyDir({ env });
+  const inspected = inspectNativeRecords(targetDir);
+  const skip = skippedFamilies(env, options.dir, report.providers, inspected);
   const records = buildRecords(
     skip.size > 0 ? { ...report, providers: (report.providers ?? []).filter((p) => !skip.has(p?.family)) } : report,
-    { nativeFamilies: native },
+    { nativeFamilies: inspected.native },
   );
   let result;
   try {

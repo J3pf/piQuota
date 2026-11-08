@@ -16,7 +16,7 @@ import { clearCache, readCache, withCache } from "../src/cache.js";
 import { parseArgs } from "../src/cli/args.js";
 import { runAuthCommand } from "../src/cli/commands/auth.js";
 import { runGentlePiCommand } from "../src/cli/commands/gentle-pi.js";
-import { runOmarchyCommand } from "../src/cli/commands/omarchy.js";
+import { preSkippedFamilies, runOmarchyCommand } from "../src/cli/commands/omarchy.js";
 import { explainLines, resolveFamilies } from "../src/cli/explain.js";
 import { err, out } from "../src/cli/output.js";
 import { collectQuota, enabledFamilies } from "../src/engine.js";
@@ -114,11 +114,15 @@ async function main() {
   }
 
   if (command === "omarchy") {
+    const preSkip = preSkippedFamilies(process.env);
+    const omarchyFamilies =
+      preSkip.size > 0 ? enabledFamilies({ env: process.env }).filter((f) => !preSkip.has(f)) : undefined;
     const load = async () => {
-      const loadFresh = () => collectQuota({ timeoutMs: args.timeoutMs, refresh, force: args.force });
+      const loadFresh = () =>
+        collectQuota({ families: omarchyFamilies, timeoutMs: args.timeoutMs, refresh, force: args.force });
       const fresh = args.noCache
         ? await loadFresh()
-        : (await withCache({ ttlMs: args.ttlMs, force: args.force }, loadFresh)).report;
+        : (await withCache({ ttlMs: args.ttlMs, force: args.force, families: omarchyFamilies }, loadFresh)).report;
       return mergeLastGood(fresh, {}).report;
     };
     return runOmarchyCommand({ load });
@@ -158,8 +162,13 @@ async function main() {
   report = reportWithHistory;
   if (args.syncOmarchy) {
     try {
-      const omarchySource = requestedFamilies ? (readCache({})?.report ?? report) : report;
-      const mergedForOmarchy = mergeLastGood(omarchySource, {}).report;
+      let mergedForOmarchy = report;
+      if (requestedFamilies) {
+        const cachedFull = readCache({})?.report;
+        if (cachedFull) {
+          mergedForOmarchy = mergeLastGood(cachedFull, {}).report;
+        }
+      }
       await runOmarchyCommand({ load: async () => mergedForOmarchy, quiet: true });
     } catch {
       // Best-effort background Omarchy sync; never fail the primary CLI output.
