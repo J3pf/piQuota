@@ -7,6 +7,7 @@
  * Omarchy's own `claude.json` / `codex.json` records are never touched.
  */
 
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -53,16 +54,17 @@ function recordsEqualIgnoringTimestamp(existingRaw, nextRecord) {
  * @param {string} dir
  * @param {string} id
  * @param {Record<string, unknown>} record
- * @returns {string} The final path.
+ * @returns {{ path: string, created: boolean }}
  */
 function writeRecord(dir, id, record) {
   const target = join(dir, `${id}.json`);
   const content = `${JSON.stringify(record)}\n`;
-  if (existsSync(target)) {
+  const existed = existsSync(target);
+  if (existed) {
     try {
       const existingRaw = readFileSync(target, "utf-8");
       if (existingRaw === content || recordsEqualIgnoringTimestamp(existingRaw, record)) {
-        return target;
+        return { path: target, created: false };
       }
     } catch {}
   }
@@ -76,7 +78,7 @@ function writeRecord(dir, id, record) {
     rmSync(temp, { force: true });
     throw error;
   }
-  return target;
+  return { path: target, created: !existed };
 }
 
 /**
@@ -147,21 +149,40 @@ export function syncOmarchyAssets(options = {}) {
 }
 
 /**
+ * Best-effort notification to the running Omarchy shell (`omarchy.agents`) so
+ * newly created or deleted `pi-*.json` files are discovered immediately without
+ * waiting for the 15-minute `refreshIntervalSec` rescan timer.
+ */
+function notifyOmarchyShell() {
+  try {
+    const child = spawn("omarchy-shell", ["-q", "omarchy.agents", "refresh"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.on("error", () => {});
+    child.unref();
+  } catch {}
+}
+
+/**
  * Write the given records and remove stale `pi-*.json` files whose provider is
  * no longer present.
  *
  * @param {Array<{ id: string, record: Record<string, unknown> }>} records
- * @param {{ dir?: string, env?: Record<string, string | undefined>, home?: string }} [options]
- * @returns {{ dir: string, written: string[], removed: string[] }}
+ * @param {{ dir?: string, env?: Record<string, string | undefined>, home?: string, notify?: boolean, notifyFn?: (info: { dir: string, created: string[], removed: string[] }) => void }} [options]
+ * @returns {{ dir: string, written: string[], created: string[], removed: string[] }}
  */
 export function publishRecords(records, options = {}) {
   const dir = options.dir ?? resolveOmarchyDir(options);
   mkdirSync(dir, { recursive: true });
 
   const written = [];
+  const created = [];
   for (const { id, record } of records) {
     if (!isPiRecordId(id)) continue;
-    written.push(writeRecord(dir, id, record));
+    const outcome = writeRecord(dir, id, record);
+    written.push(outcome.path);
+    if (outcome.created) created.push(outcome.path);
   }
 
   const keep = new Set(records.map(({ id }) => `${id}.json`));
@@ -175,5 +196,15 @@ export function publishRecords(records, options = {}) {
 
   syncOmarchyAssets(options);
 
-  return { dir, written, removed };
+  if (created.length > 0 || removed.length > 0) {
+    if (typeof options.notifyFn === "function") {
+      try {
+        options.notifyFn({ dir, created, removed });
+      } catch {}
+    } else if (options.notify === true) {
+      notifyOmarchyShell();
+    }
+  }
+
+  return { dir, written, created, removed };
 }

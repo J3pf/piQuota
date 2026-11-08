@@ -157,13 +157,45 @@ const SHORT_NAMES = {
 
 /**
  * @param {import("../model.js").QuotaResult} provider
+ * @param {{ nativeFamilies?: Set<string> }} [options]
  * @returns {string}
  */
-function recordName(provider) {
+function recordName(provider, options = {}) {
   if (SHORT_NAMES[provider.family]) {
     return SHORT_NAMES[provider.family];
   }
-  return redact(String(provider.label || provider.family).replace(/\s*\(Pi\)\s*$/i, ""));
+  const base = redact(String(provider.label || provider.family).replace(/\s*\(Pi\)\s*$/i, ""));
+  if (options.nativeFamilies?.has?.(provider.family)) {
+    return `${base} (Pi)`;
+  }
+  return base;
+}
+
+/**
+ * Extract an Omarchy prepaid `balance` ledger (`{ remaining, funded, spent, currency }`)
+ * when a provider reports USD credit usage in its window notes (e.g. OpenRouter `"$4.25 / $20.00"`).
+ *
+ * @param {import("../model.js").QuotaResult} provider
+ * @returns {{ remaining: number, funded: number, spent: number, currency: string } | undefined}
+ */
+function extractBalance(provider) {
+  if (provider?.family !== "openrouter" || !provider.ok) return undefined;
+  for (const window of provider.windows ?? []) {
+    if (typeof window?.note !== "string") continue;
+    const match = window.note.match(/^\$(\d+(?:\.\d+)?)\s*\/\s*\$(\d+(?:\.\d+)?)$/);
+    if (!match) continue;
+    const spent = Number(match[1]);
+    const funded = Number(match[2]);
+    if (!Number.isFinite(spent) || !Number.isFinite(funded) || funded <= 0) continue;
+    const remaining = Math.max(0, Number((funded - spent).toFixed(2)));
+    return {
+      remaining,
+      funded,
+      spent,
+      currency: "USD",
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -186,7 +218,7 @@ function recordTierLabel(provider) {
  * (and any record from an earlier run is removed by the publisher).
  *
  * @param {import("../model.js").QuotaResult} provider
- * @param {{ now?: number }} [options]
+ * @param {{ now?: number, nativeFamilies?: Set<string> }} [options]
  * @returns {{ id: string, record: Record<string, unknown> } | null}
  */
 export function buildRecord(provider, options = {}) {
@@ -201,24 +233,30 @@ export function buildRecord(provider, options = {}) {
     : { usageStatusText: "", authHelpText: "" };
 
   const id = recordId(provider.family);
+  const balance = extractBalance(provider);
+  /** @type {Record<string, unknown>} */
+  const record = {
+    schemaVersion: SCHEMA_VERSION,
+    id,
+    name: recordName(provider, options),
+    ready: !failed,
+    tierLabel: recordTierLabel(provider),
+    limits: failed && limits.length === 0 ? [{ ...PLACEHOLDER_LIMIT }] : limits,
+    usageStatusText: status.usageStatusText,
+    authHelpText: status.authHelpText,
+    hasLocalStats: false,
+    hasPromptStats: false,
+    updatedAt:
+      typeof provider.updatedAt === "string" && provider.updatedAt
+        ? provider.updatedAt
+        : new Date(now).toISOString(),
+  };
+  if (balance) {
+    record.balance = balance;
+  }
   return {
     id,
-    record: {
-      schemaVersion: SCHEMA_VERSION,
-      id,
-      name: recordName(provider),
-      ready: !failed,
-      tierLabel: recordTierLabel(provider),
-      limits: failed && limits.length === 0 ? [{ ...PLACEHOLDER_LIMIT }] : limits,
-      usageStatusText: status.usageStatusText,
-      authHelpText: status.authHelpText,
-      hasLocalStats: false,
-      hasPromptStats: false,
-      updatedAt:
-        typeof provider.updatedAt === "string" && provider.updatedAt
-          ? provider.updatedAt
-          : new Date(now).toISOString(),
-    },
+    record,
   };
 }
 
@@ -227,7 +265,7 @@ export function buildRecord(provider, options = {}) {
  * Never throws: a malformed provider entry is skipped.
  *
  * @param {import("../engine.js").PiQuotaReport} report
- * @param {{ now?: number }} [options]
+ * @param {{ now?: number, nativeFamilies?: Set<string> }} [options]
  * @returns {Array<{ id: string, record: Record<string, unknown> }>}
  */
 export function buildRecords(report, options = {}) {

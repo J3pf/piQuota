@@ -14,17 +14,42 @@ import { buildRecords } from "../../omarchy/record.js";
 import { err, out } from "../output.js";
 
 /**
+ * Detect which families (`claude`, `codex`) already have a native `<family>.json`
+ * record in Omarchy's usage directory so any coexisting `pi-<family>.json` tab
+ * can be disambiguated with a `(Pi)` suffix (`Codex (Pi)`, `Claude (Pi)`).
+ *
+ * @param {string} [dir]
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {Set<string>}
+ */
+export function nativeFamilies(dir, env = process.env) {
+  const native = new Set();
+  const targetDir = dir ?? resolveOmarchyDir({ env });
+  try {
+    for (const family of ["claude", "codex"]) {
+      if (existsSync(join(targetDir, `${family}.json`))) {
+        native.add(family);
+      }
+    }
+  } catch {}
+  return native;
+}
+
+/**
  * Families to leave out, e.g. PI_QUOTA_OMARCHY_SKIP=claude when Omarchy's own
  * collector already covers that provider. Their stale pi-*.json is removed.
  *
  * Defaults to skipping `claude` when Omarchy's native `claude.json` exists in
- * the destination directory, avoiding duplicate Claude cards in the bar panel.
+ * the destination directory (unless `claude.json` has an empty `limits` array
+ * and Pi's `claude` provider has live quota windows), and skipping `codex` when
+ * native `codex.json` already carries non-empty `limits`.
  *
  * @param {Record<string, string | undefined>} env
  * @param {string} [dir]
+ * @param {import("../../model.js").QuotaResult[]} [providers]
  * @returns {Set<string>}
  */
-export function skippedFamilies(env, dir) {
+export function skippedFamilies(env, dir, providers) {
   if (env.PI_QUOTA_OMARCHY_SKIP !== undefined) {
     return new Set(
       String(env.PI_QUOTA_OMARCHY_SKIP)
@@ -36,8 +61,19 @@ export function skippedFamilies(env, dir) {
   const skip = new Set();
   const targetDir = dir ?? resolveOmarchyDir({ env });
   try {
-    if (existsSync(join(targetDir, "claude.json"))) {
-      skip.add("claude");
+    const claudePath = join(targetDir, "claude.json");
+    if (existsSync(claudePath)) {
+      let emptyNativeLimits = false;
+      try {
+        const parsed = JSON.parse(readFileSync(claudePath, "utf-8"));
+        emptyNativeLimits = Array.isArray(parsed?.limits) && parsed.limits.length === 0;
+      } catch {}
+      const piClaudeHealthy =
+        Array.isArray(providers) &&
+        providers.some((p) => p?.family === "claude" && p.ok && Array.isArray(p.windows) && p.windows.length > 0);
+      if (!emptyNativeLimits || !piClaudeHealthy) {
+        skip.add("claude");
+      }
     }
     const codexPath = join(targetDir, "codex.json");
     if (existsSync(codexPath)) {
@@ -51,7 +87,7 @@ export function skippedFamilies(env, dir) {
 }
 
 /**
- * @param {{ load: () => Promise<import("../../engine.js").PiQuotaReport>, dir?: string, env?: Record<string, string | undefined>, quiet?: boolean }} options
+ * @param {{ load: () => Promise<import("../../engine.js").PiQuotaReport>, dir?: string, env?: Record<string, string | undefined>, quiet?: boolean, notify?: boolean }} options
  * @returns {Promise<number>}
  */
 export async function runOmarchyCommand(options) {
@@ -63,11 +99,20 @@ export async function runOmarchyCommand(options) {
     return 1;
   }
 
-  const skip = skippedFamilies(options.env ?? process.env, options.dir);
-  const records = buildRecords(skip.size > 0 ? { ...report, providers: (report.providers ?? []).filter((p) => !skip.has(p?.family)) } : report);
+  const env = options.env ?? process.env;
+  const skip = skippedFamilies(env, options.dir, report.providers);
+  const native = nativeFamilies(options.dir, env);
+  const records = buildRecords(
+    skip.size > 0 ? { ...report, providers: (report.providers ?? []).filter((p) => !skip.has(p?.family)) } : report,
+    { nativeFamilies: native },
+  );
   let result;
   try {
-    result = publishRecords(records, { dir: options.dir, env: options.env });
+    result = publishRecords(records, {
+      dir: options.dir,
+      env: options.env,
+      notify: options.notify ?? (!options.dir && !env.PI_QUOTA_OMARCHY_DIR),
+    });
   } catch (error) {
     err(`omarchy: could not write records: ${redact(/** @type {{ message?: string }} */ (error)?.message ?? error)}`);
     return 1;

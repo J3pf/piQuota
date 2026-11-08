@@ -405,9 +405,11 @@ piquota omarchy                  # write pi-claude.json, pi-codex.json, ... once
 - A provider with a failing sign-in shows a status and a help line instead of
   limits. A provider that is not configured gets no record, and a stale
   `pi-*.json` is removed on the next run.
-- Omarchy's native collector already tracks Claude with richer local statistics, so
-  `piquota omarchy` automatically skips `claude` and cleans up duplicate `pi-claude.json`
-  files when `claude.json` exists in the usage directory (override with `PI_QUOTA_OMARCHY_SKIP`).
+- Omarchy's native collectors already track Claude and Codex with local token statistics, so
+  `piquota omarchy` skips `claude` / `codex` when their native `<family>.json` already carries
+  rate-limit windows. When a native record only has local stats (`"limits": []`) and Pi has live
+  quota windows, `pi-<family>.json` is published as `Codex (Pi)` / `Claude (Pi)` so both tabs
+  remain distinguishable (override with `PI_QUOTA_OMARCHY_SKIP`).
 - `PI_QUOTA_OMARCHY_DIR` overrides the output directory. `./install.sh --uninstall`
   removes the timer and the `pi-*.json` records.
 
@@ -459,7 +461,7 @@ extensions/quota-panel.ts      Pi TUI line and /quota
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 241 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 243 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { runOmarchyCommand, skippedFamilies } from "../src/cli/commands/omarchy.js";
+import { nativeFamilies, runOmarchyCommand, skippedFamilies } from "../src/cli/commands/omarchy.js";
 import { publishRecords, resolveOmarchyDir, syncOmarchyAssets } from "../src/omarchy/publish.js";
 import { buildRecord, buildRecords } from "../src/omarchy/record.js";
 
@@ -337,6 +337,10 @@ test("syncOmarchyAssets copies SVG marks into Omarchy plugin asset directories i
     assert.ok(existsSync(join(pluginDir, "assets", "pi-antigravity.svg")));
     assert.ok(existsSync(join(pluginDir, "assets", "opencode-go.svg")));
     assert.ok(existsSync(join(pluginDir, "assets", "github-actions.svg")));
+    assert.ok(existsSync(join(pluginDir, "assets", "copilot.svg")));
+    assert.ok(existsSync(join(pluginDir, "assets", "pi-copilot.svg")));
+    assert.ok(existsSync(join(pluginDir, "assets", "openrouter.svg")));
+    assert.ok(existsSync(join(pluginDir, "assets", "pi-openrouter.svg")));
 
     // Idempotent: identical files must not be touched to prevent triggering Omarchy shell reload watches
     const secondPass = syncOmarchyAssets({ home });
@@ -345,4 +349,81 @@ test("syncOmarchyAssets copies SVG marks into Omarchy plugin asset directories i
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("coexisting native codex.json or claude.json disambiguates Pi tab names and notifies only on file additions or removals", async () => {
+  const dir = tempDir();
+  try {
+    writeFileSync(join(dir, "codex.json"), '{"id":"codex","name":"Codex","limits":[]}');
+    writeFileSync(join(dir, "claude.json"), '{"id":"claude","name":"Claude Code","limits":[]}');
+
+    assert.deepEqual([...nativeFamilies(dir, {})].sort(), ["claude", "codex"]);
+    // When Pi's claude has live windows and claude.json has empty limits, claude is not skipped
+    const report = {
+      providers: [
+        provider({ family: "claude", label: "Claude (Pi)" }),
+        provider({ family: "codex", label: "Codex (Pi)" }),
+      ],
+    };
+    assert.deepEqual([...skippedFamilies({}, dir, report.providers)], []);
+
+    const code = await runOmarchyCommand({ load: async () => /** @type {any} */ (report), dir, env: {}, quiet: true });
+    assert.equal(code, 0);
+    const piCodex = JSON.parse(readFileSync(join(dir, "pi-codex.json"), "utf-8"));
+    const piClaude = JSON.parse(readFileSync(join(dir, "pi-claude.json"), "utf-8"));
+    assert.equal(piCodex.name, "Codex (Pi)");
+    assert.equal(piClaude.name, "Claude (Pi)");
+
+    // Notification callback fires only when files are newly created or removed, not on in-place updates
+    const events = [];
+    const records = buildRecords(/** @type {any} */ ({ providers: [provider({ family: "antigravity", label: "Antigravity (Pi)" })] }), { now: NOW });
+    publishRecords(records, { dir, notifyFn: (info) => events.push(info) });
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].created, [join(dir, "pi-antigravity.json")]);
+    assert.equal(events[0].removed.length, 2, "removed pi-claude.json and pi-codex.json");
+
+    // Second pass with updated percent on existing file does not fire notifyFn
+    const updatedRecords = buildRecords(
+      /** @type {any} */ ({
+        providers: [
+          provider({
+            family: "antigravity",
+            label: "Antigravity (Pi)",
+            windows: [{ id: "5h", label: "5h window", usedPercent: 55, remainingPercent: 45, resetsAt: "2026-10-04T10:00:00.000Z" }],
+          }),
+        ],
+      }),
+      { now: NOW },
+    );
+    publishRecords(updatedRecords, { dir, notifyFn: (info) => events.push(info) });
+    assert.equal(events.length, 1, "updating an existing record in place must not trigger rescan notification");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("openrouter prepaid credits populate native Omarchy balance ledger", () => {
+  const orProvider = provider({
+    family: "openrouter",
+    label: "OpenRouter (Pi)",
+    plan: "paid",
+    windows: [
+      {
+        id: "5h",
+        label: "Credits",
+        usedPercent: 62.5,
+        remainingPercent: 37.5,
+        resetsAt: null,
+        note: "$12.50 / $20.00",
+      },
+    ],
+  });
+  const built = buildRecord(orProvider, { now: NOW });
+  assert.deepEqual(built.record.balance, {
+    remaining: 7.5,
+    funded: 20,
+    spent: 12.5,
+    currency: "USD",
+  });
+});
+
 
