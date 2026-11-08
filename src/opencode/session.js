@@ -14,7 +14,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, wri
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { discoverCookieStores, findCookie } from "../browser/cookies.js";
+import { discoverCookieStores, findCookiesInStore } from "../browser/cookies.js";
 import { findRecentWorkspaceIds } from "../browser/history.js";
 import { redact, requestJson } from "../http.js";
 import { parseGoDashboard, parseGoMeters, findWorkspaceIds } from "./dashboard.js";
@@ -118,17 +118,15 @@ export function resolveCookie(options = {}) {
   let partialMatch = null;
   for (const store of stores) {
     if (store.readability === "encrypted") {
-      lastHit = findCookie({ host: OPENCODE_COOKIE_HOST, name: OPENCODE_COOKIE_NAME, stores: [store], home: options.home, secretTool: options.secretTool });
+      lastHit = { found: false, candidates: 0, encryptedOnly: true };
       continue;
     }
-    const hits = {};
-    for (const name of OPENCODE_COOKIE_NAMES) {
-      const hit = findCookie({ host: OPENCODE_COOKIE_HOST, name, stores: [store], home: options.home, secretTool: options.secretTool });
-      if (hit.found && hit.value) {
-        hits[name] = hit.value;
-      }
-      lastHit = hit;
-    }
+    const hits = findCookiesInStore(store, {
+      host: OPENCODE_COOKIE_HOST,
+      names: OPENCODE_COOKIE_NAMES,
+      secretTool: options.secretTool,
+    });
+    lastHit = { found: Object.keys(hits).length > 0, candidates: 1, encryptedOnly: false };
     if (hits[OPENCODE_COOKIE_NAME] && hits["__Host-console_session"]) {
       return {
         found: true,

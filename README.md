@@ -52,9 +52,11 @@ shuvquota, and it never writes to a credential file.
 | Provider | Source | Endpoint | Result |
 | --- | --- | --- | --- |
 | Claude | Claude Code CLI store, else `anthropic.access` | `GET api.anthropic.com/api/oauth/usage` | ✅ 5h + weekly + plan |
-| Codex | `openai-codex.access` + `accountId` | `GET chatgpt.com/backend-api/wham/usage` | ✅ 5h + weekly + plan |
+| Codex | `openai-codex.access` + `accountId` (or `~/.codex/auth.json`) | `GET chatgpt.com/backend-api/wham/usage` | ✅ 5h + weekly + plan |
 | Antigravity | `antigravity.access` + `projectId` | `POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` | ✅ Gemini + Claude/GPT buckets, **with in-memory refresh** |
-| OpenCode Go | opencode.ai session cookie | `GET opencode.ai/console/api/go/status` (fallback `GET opencode.ai/workspace/<id>/go`) | ✅ 5h + weekly + monthly, verified live |
+| OpenCode Go | `opencode-go.key` (fallback opencode.ai session cookie) | `GET opencode.ai/zen/go/v1/usage` (fallback `/console/api/go/status` & `/workspace/<id>/go`) | ✅ 5h + weekly + monthly, verified live |
+| GitHub Copilot (auto) | `github-copilot.refresh` / `access` | `GET api.github.com/copilot_internal/user` | ✅ monthly premium requests + chat/completions |
+| OpenRouter (auto) | `openrouter.key` | `GET openrouter.ai/api/v1/key` + `/api/v1/credits` | ✅ key limit + prepaid credit balance |
 | GitHub Actions (opt-in) | Authenticated `gh` CLI | `gh api /organizations/<org>/settings/billing/usage/summary?product=Actions` | ✅ org-wide monthly Linux minutes, plan-derived allowance |
 
 Four findings worth recording, each of which cost a wrong hypothesis:
@@ -62,10 +64,11 @@ Four findings worth recording, each of which cost a wrong hypothesis:
 1. **Antigravity needs the CLI `User-Agent`.** Without
    `User-Agent: antigravity/cli/...` the backend answers
    `403 You do not have a valid license of this product` for a healthy token.
-2. **Pi's `opencode-go` entry is an OpenCode Zen API key, not a Go session.** It
-   validates (`/zen/v1/models` → 200, 70 models) but exposes no usage: the Go
-   windows live behind the authenticated Console status API (`/console/api/go/status`)
-   and workspace SSR page (`/workspace/<id>/go`).
+2. **OpenCode Go supports direct API key usage queries with a Console fallback.**
+   `GET https://opencode.ai/zen/go/v1/usage` accepts Pi's `opencode-go` Bearer API
+   key directly; when absent or unavailable, `piquota` falls back to the
+   authenticated Console status API (`/console/api/go/status`) and workspace SSR
+   page (`/workspace/<id>/go`).
 3. **`primaryWindowId` identifies the most urgent window.** The CLI computes the
    shortest, most pressing window (e.g. 5h session before weekly) so downstream UI
    consumers like `rp-host` and the Pi TUI render priority pills without reimplementing

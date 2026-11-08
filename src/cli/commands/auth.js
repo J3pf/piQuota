@@ -213,7 +213,8 @@ export async function authStatus() {
   const codexCli = loadCodexCliCredential({});
   out(`  codex cli  ${codexCli ? `${codexCli.source} (${codexCli.planType ?? "oauth"})` : "not found"}`);
   const hasOpenCodeKey = loaded.credentials.some((c) => c.family === "opencode-go" && Boolean(c.key || c.access)) || Boolean(process.env.OPENCODE_API_KEY);
-  const cookie = resolveCookie({});
+  const stores = discoverCookieStores({});
+  const cookie = resolveCookie({ stores });
   out(
     `  opencode   ${hasOpenCodeKey ? "API key configured (GET /zen/go/v1/usage)" : "no API key"}` +
       ` · ${cookie.found ? `cookie via ${cookie.origin} — ${cookie.detail}` : `no cookie (${cookie.detail})`}`,
@@ -221,7 +222,6 @@ export async function authStatus() {
   const workspace = configPaths({}).workspacePath;
   out(`  workspace  ${existsSync(workspace) ? "cached" : "not cached"}`);
 
-  const stores = discoverCookieStores({});
   out("  browser stores:");
   for (const store of stores) {
     out(`    ${store.readability === "plaintext" ? "readable " : "ENCRYPTED"} ${store.browser} ${store.profile}`);

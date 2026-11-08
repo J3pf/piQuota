@@ -80,7 +80,10 @@ export function explainLines(families) {
   lines.push("  fields read from auth.json: type, access, refresh, expires, accountId, projectId, email, key");
   lines.push("  derived from the Codex JWT (payload only): chatgpt_account_id, chatgpt_plan_type, email");
 
-  const cookie = resolveCookie({});
+  const hasOpenCodeKey =
+    loaded.credentials.some((c) => c.family === "opencode-go" && Boolean(c.key || c.access)) ||
+    Boolean(process.env.OPENCODE_API_KEY);
+  const cookie = resolveCookie({ allowBrowser: families.includes("opencode-go") && !hasOpenCodeKey });
   lines.push("  opencode-go primary: GET https://opencode.ai/zen/go/v1/usage (Bearer API key)");
   lines.push(`  opencode.ai cookie (fallback): ${cookie.found ? `found via ${cookie.origin} (${cookie.detail})` : `not found (${cookie.detail})`}`);
   // Claude has two sources, and which one is in use is the single most useful

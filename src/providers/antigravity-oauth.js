@@ -41,6 +41,9 @@ const ANTIGRAVITY_OAUTH_SOURCES = [
   join(homedir(), ".pi", "agent", "npm", "node_modules", "pi-antigravity", "dist", "auth", "oauth.js"),
 ];
 
+/** @type {{ clientId: string, clientSecret: string } | null | undefined} */
+let cachedDefaultExtractedClient;
+
 /**
  * Recover the two `atob("..." + "...")` literals from the installed package.
  *
@@ -48,6 +51,9 @@ const ANTIGRAVITY_OAUTH_SOURCES = [
  * @returns {{ clientId: string, clientSecret: string } | null}
  */
 export function extractClientFromPiAntigravity(sourcePath) {
+  if (sourcePath === undefined && cachedDefaultExtractedClient !== undefined) {
+    return cachedDefaultExtractedClient;
+  }
   const candidates = sourcePath ? [sourcePath] : ANTIGRAVITY_OAUTH_SOURCES;
   for (const path of candidates) {
     if (!existsSync(path)) continue;
@@ -68,9 +74,12 @@ export function extractClientFromPiAntigravity(sourcePath) {
       }
     }
     if (decoded.length >= 2 && decoded[0].includes(".") && decoded[1].length > 10) {
-      return { clientId: decoded[0], clientSecret: decoded[1] };
+      const result = { clientId: decoded[0], clientSecret: decoded[1] };
+      if (sourcePath === undefined) cachedDefaultExtractedClient = result;
+      return result;
     }
   }
+  if (sourcePath === undefined) cachedDefaultExtractedClient = null;
   return null;
 }
 

@@ -16,7 +16,7 @@
  * to disk.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -60,6 +60,9 @@ function resolveProjectCachePath(options = {}) {
   return join(baseDir, "antigravity-projects.json");
 }
 
+/** @type {Map<string, { mtimeMs: number, size: number, data: Record<string, unknown> }>} */
+const projectInfoMemCache = new Map();
+
 /**
  * @param {string | undefined} identity
  * @param {{ env?: Record<string, string | undefined>, home?: string, fetchFn?: typeof fetch }} [options]
@@ -68,10 +71,17 @@ function resolveProjectCachePath(options = {}) {
 function readCachedProjectInfo(identity, options = {}) {
   if (!identity) return { projectId: null, base: null };
   const cachePath = resolveProjectCachePath(options);
-  if (!cachePath || !existsSync(cachePath)) return { projectId: null, base: null };
+  if (!cachePath) return { projectId: null, base: null };
   try {
-    const parsed = record(JSON.parse(readFileSync(cachePath, { encoding: "utf-8", flag: "r" })));
-    const raw = parsed?.[identity];
+    const st = statSync(cachePath);
+    const cached = projectInfoMemCache.get(cachePath);
+    let parsed = cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size ? cached.data : null;
+    if (!parsed) {
+      parsed = record(JSON.parse(readFileSync(cachePath, { encoding: "utf-8", flag: "r" })));
+      if (!parsed) return { projectId: null, base: null };
+      projectInfoMemCache.set(cachePath, { mtimeMs: st.mtimeMs, size: st.size, data: parsed });
+    }
+    const raw = parsed[identity];
     if (typeof raw === "string") return { projectId: stringValue(raw), base: null };
     const entry = record(raw);
     return {
@@ -79,6 +89,7 @@ function readCachedProjectInfo(identity, options = {}) {
       base: stringValue(entry?.base),
     };
   } catch {
+    projectInfoMemCache.delete(cachePath);
     return { projectId: null, base: null };
   }
 }
@@ -115,6 +126,12 @@ function writeCachedProjectInfo(identity, info, options = {}) {
     tmp = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
     renameSync(tmp, cachePath);
+    try {
+      const st = statSync(cachePath);
+      projectInfoMemCache.set(cachePath, { mtimeMs: st.mtimeMs, size: st.size, data: current });
+    } catch {
+      projectInfoMemCache.delete(cachePath);
+    }
   } catch {
     if (tmp) {
       try {

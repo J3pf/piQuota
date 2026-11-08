@@ -15,7 +15,7 @@
 import { execFileSync } from "node:child_process";
 import { createDecipheriv, createHash, pbkdf2Sync } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -362,6 +362,9 @@ function hasHostDigestPrefix(decrypted, host) {
   return !isPrintableAscii(prefix) && (hasKnownCookiePrefix(rest) || isPrintableAscii(rest));
 }
 
+/** @type {Map<string, Buffer>} */
+const pbkdf2KeyCache = new Map();
+
 /**
  * Decrypt a Linux Chromium OSCrypt cookie value. The `password` option allows
  * callers/tests to supply an already-resolved Safe Storage password.
@@ -382,7 +385,11 @@ export function decryptLinuxChromiumCookie(encryptedValue, options = {}) {
   if (typeof password !== "string" || password.length === 0) return null;
 
   try {
-    const key = pbkdf2Sync(password, "saltysalt", 1, 16, "sha1");
+    let key = pbkdf2KeyCache.get(password);
+    if (!key) {
+      key = pbkdf2Sync(password, "saltysalt", 1, 16, "sha1");
+      pbkdf2KeyCache.set(password, key);
+    }
     const decipher = createDecipheriv("aes-128-cbc", key, Buffer.alloc(16, 0x20));
     const decrypted = Buffer.concat([decipher.update(encrypted.subarray(3)), decipher.final()]);
     let payload = decrypted;
@@ -404,6 +411,9 @@ function isPrintableAscii(bytes) {
   return bytes.length > 0 && bytes.every((byte) => byte >= 0x20 && byte <= 0x7e);
 }
 
+/** @type {Map<string, { mtimeMs: number, size: number, status: { readability: "plaintext" | "encrypted", note?: string } }>} */
+const readabilityCache = new Map();
+
 /**
  * Decide whether the encrypted values in a Linux Chromium database are
  * supported by this process. v10 uses the documented legacy password; v11
@@ -415,8 +425,24 @@ function isPrintableAscii(bytes) {
  * @returns {{ readability: "plaintext" | "encrypted", note?: string }}
  */
 function chromiumStoreReadability(dbPath, app, options = {}) {
+  const canCache = typeof options.secretTool !== "function";
+  const cacheKey = `${app}:${dbPath}`;
+  let st = null;
+  if (canCache) {
+    try {
+      st = statSync(dbPath);
+      const cached = readabilityCache.get(cacheKey);
+      if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+        return cached.status;
+      }
+    } catch {
+      st = null;
+    }
+  }
   const copy = withCopy(dbPath);
   let database;
+  /** @type {{ readability: "plaintext" | "encrypted", note?: string }} */
+  let status;
   try {
     try {
       database = new DatabaseSync(copy.db, { readOnly: true });
@@ -426,19 +452,20 @@ function chromiumStoreReadability(dbPath, app, options = {}) {
     const rows = database.prepare(
       "select encrypted_value from cookies where encrypted_value is not null and length(encrypted_value) > 0 limit 1",
     ).all();
+    status = { readability: "plaintext" };
     for (const row of rows) {
       const encrypted = Buffer.from(row.encrypted_value);
       const version = encrypted.subarray(0, 3).toString("ascii");
       if (version === "v10") continue;
       if (version === "v11" && linuxChromiumPassword(app, options)) continue;
-      return {
+      status = {
         readability: "encrypted",
         note: "Chromium OSCrypt cookies need a supported v10 value or an unlocked Secret Service Safe Storage entry for this browser.",
       };
+      break;
     }
-    return { readability: "plaintext" };
   } catch {
-    return {
+    status = {
       readability: "encrypted",
       note: "Chromium cookie database could not be inspected; its encrypted values may require the browser's Secret Service Safe Storage entry.",
     };
@@ -446,6 +473,10 @@ function chromiumStoreReadability(dbPath, app, options = {}) {
     try { database?.close(); } catch {}
     copy.cleanup();
   }
+  if (canCache && st) {
+    readabilityCache.set(cacheKey, { mtimeMs: st.mtimeMs, size: st.size, status });
+  }
+  return status;
 }
 
 const activeCookieCleanups = new Set();
@@ -621,4 +652,39 @@ export function findCookie(options) {
     candidates: scanned,
     encryptedOnly: scanned === 0 && stores.length > 0,
   };
+}
+
+/**
+ * Look up multiple cookie names for `host` inside a single readable store using
+ * one database copy and query.
+ *
+ * @param {CookieStore} store
+ * @param {{ host: string, names: string[], secretTool?: (args: string[]) => string | null }} options
+ * @returns {Record<string, string>}
+ */
+export function findCookiesInStore(store, options) {
+  /** @type {Record<string, string>} */
+  const hits = {};
+  if (store.readability !== "plaintext") return hits;
+  const targetNames = new Set(options.names);
+  const query = { hostLike: `%${options.host}%` };
+  const rows = store.browser === "firefox"
+    ? readFirefoxCookies(store.path, query)
+    : readChromiumCookies(store.path, query);
+  for (const row of rows) {
+    if (!targetNames.has(row.name) || hits[row.name]) continue;
+    if (row.value && row.value.length > 0) {
+      hits[row.name] = row.value;
+      continue;
+    }
+    if (store.browser === "chromium" && row.encrypted_value?.length > 0) {
+      const value = decryptLinuxChromiumCookie(row.encrypted_value, {
+        app: store.app ?? "chromium",
+        host: row.host || options.host,
+        secretTool: options.secretTool,
+      });
+      if (value) hits[row.name] = value;
+    }
+  }
+  return hits;
 }
