@@ -227,7 +227,10 @@ test("omarchy automatically skips claude when native claude.json exists in targe
   assert.equal(existsSync(join(dir, "pi-claude.json")), false);
   assert.equal(existsSync(join(dir, "pi-codex.json")), true);
 
-  writeFileSync(join(dir, "codex.json"), "{}");
+  writeFileSync(join(dir, "codex.json"), '{"limits":[]}');
+  assert.deepEqual([...skippedFamilies({}, dir)], ["claude"], "codex.json with empty limits does not suppress pi-codex.json");
+
+  writeFileSync(join(dir, "codex.json"), '{"limits":[{"percent":0.1}]}');
   assert.deepEqual([...skippedFamilies({}, dir)].sort(), ["claude", "codex"]);
 });
 

@@ -39,13 +39,6 @@ export const ERROR_KINDS = ["transient", "throttle", "expired", "auth", "missing
 export function errorKind(error) {
   if (!error || typeof error !== "string") return "unknown";
   if (
-    /no [a-z-]+ credential|has no (anthropic|openai-codex|antigravity|opencode-go) (access )?token|no key stored|no (?:OpenCode session|"?__Host-console_session"?|"auth") cookie|no auth cookie:|no opencode\.ai session|Claude Code CLI has no readable credentials|requires the gh CLI/i.test(
-      error,
-    )
-  ) {
-    return "missing";
-  }
-  if (
     /token expired|token EXPIRED|token -?\d+m|expires in -\d+|sign-in expired|re-authenticate|expired or rejected|rejected by .* zen|rejected; run \/login|reconnect OpenCode in Pi/i.test(
       error,
     )
@@ -57,6 +50,13 @@ export function errorKind(error) {
   }
   if (/\bHTTP 40[13]\b|\bstatus 40[13]\b|\b40[13]\s+(?:unauthorized|forbidden)\b|unauthorized|forbidden|invalid_grant|token rejected/i.test(error)) {
     return "auth";
+  }
+  if (
+    /no [a-z-]+ credential|has no (anthropic|openai-codex|antigravity|opencode-go) (access )?token|no key stored|no (?:OpenCode session|"?__Host-console_session"?|"auth") cookie|no auth cookie:|no opencode\.ai session|Claude Code CLI has no readable credentials|requires the gh CLI/i.test(
+      error,
+    )
+  ) {
+    return "missing";
   }
   if (/HTTP 5\d\d|timed out|timeout|ECONNRESET|socket|network|fetch failed|ENOTFOUND|ETIMEDOUT|EPIPE|ECONNREFUSED|aborted|hang up/i.test(error)) {
     return "transient";

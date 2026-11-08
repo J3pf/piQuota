@@ -5,7 +5,7 @@
  * says so, and a write failure is reported with a non-zero exit code.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { redact } from "../../http.js";
@@ -39,8 +39,12 @@ export function skippedFamilies(env, dir) {
     if (existsSync(join(targetDir, "claude.json"))) {
       skip.add("claude");
     }
-    if (existsSync(join(targetDir, "codex.json"))) {
-      skip.add("codex");
+    const codexPath = join(targetDir, "codex.json");
+    if (existsSync(codexPath)) {
+      const parsed = JSON.parse(readFileSync(codexPath, "utf-8"));
+      if (Array.isArray(parsed?.limits) && parsed.limits.length > 0) {
+        skip.add("codex");
+      }
     }
   } catch {}
   return skip;
