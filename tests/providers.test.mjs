@@ -126,10 +126,30 @@ test("antigravity: the license 403 becomes an actionable message", async () => {
 });
 
 test("opencode-go: without dashboard credentials it degrades and explains the missing fields", async () => {
-  const { fetchFn } = routedFetch([["opencode.ai/zen", () => jsonResponse({ object: "list", data: [{ id: "m1" }] })]]);
+  const { fetchFn: directFetchFn } = routedFetch([
+    [
+      "opencode.ai/zen/go/v1/usage",
+      () =>
+        jsonResponse({
+          usage: {
+            rolling: { usagePercent: 18, resetInSec: 7200, usageDollars: 2.16, limitDollars: 12 },
+            weekly: { usagePercent: 40, resetInSec: 345600 },
+            monthly: { usagePercent: 25, resetInSec: 1200000 },
+          },
+        }),
+    ],
+  ]);
   const credential = normalizeCredential("opencode-go", { type: "api_key", key: "sk-FAKE-zen" }, "/tmp/auth.json");
   assert.ok(credential);
 
+  const directResult = await fetchOpenCodeGo(credential, { now: NOW, fetchFn: directFetchFn, env: {}, stores: [], allowBrowser: false });
+  assert.equal(directResult.ok, true, "reads Go quota directly from /zen/go/v1/usage with API key and zero cookies");
+  assert.equal(directResult.windows.length, 3);
+  assert.equal(directResult.windows[0].id, "5h");
+  assert.equal(directResult.windows[0].usedPercent, 18);
+  assert.equal(directResult.windows[0].note, "$2.16 / $12.00");
+
+  const { fetchFn } = routedFetch([["opencode.ai/zen", () => jsonResponse({ object: "list", data: [{ id: "m1" }] })]]);
   const result = await fetchOpenCodeGo(credential, { now: NOW, fetchFn, env: {}, stores: [], allowBrowser: false });
   assert.equal(result.ok, false);
   assert.match(result.error ?? "", /Pi OpenCode key is valid \(1 Zen models visible\)/);

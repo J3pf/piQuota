@@ -1,20 +1,26 @@
 /**
  * OpenCode Go quota.
  *
- * The `opencode-go` entry in Pi's store is an OpenCode Zen API key: it proves
- * the credential is alive but exposes no usage. The Go plan windows
- * (5h / weekly / monthly) live behind the authenticated dashboard, so they are
- * read through src/opencode/session.js, which resolves the session cookie from
- * the environment, a 0600 config file, or a local browser's cookie store.
+ * Primary path (zero-browser):
+ *   GET https://opencode.ai/zen/go/v1/usage  (Authorization: Bearer <API_KEY>)
+ *   Uses the `opencode-go` API key Pi already stores in `~/.pi/agent/auth.json`
+ *   (or `~/.local/share/opencode/auth.json` / `$OPENCODE_API_KEY`) to read the
+ *   5h, weekly, and monthly Go quota windows directly, with no browser cookies.
  *
- * This provider never breaks the report: every failure is a precise,
- * actionable message.
+ * Fallback path (web console / dashboard):
+ *   When the API usage endpoint is unavailable or no API key is configured,
+ *   resolves the `opencode.ai` session cookie via `src/opencode/session.js`.
  */
 
-import { degradedResult, displayIdentity } from "../model.js";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+import { buildWindow, clampPercent, degradedResult, displayIdentity, finiteNumber, stringValue } from "../model.js";
 import { requestJson } from "../http.js";
 import { readGoPlan, resolveCookie } from "../opencode/session.js";
 
+const ZEN_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 const ZEN_MODELS_URL = "https://opencode.ai/zen/v1/models";
 
 /**
@@ -28,10 +34,148 @@ function record(value) {
 }
 
 /**
+ * Resolve an OpenCode Go API key from Pi's credential, `$OPENCODE_API_KEY`, or
+ * the native OpenCode CLI store (`~/.local/share/opencode/auth.json`).
+ *
+ * @param {import("../auth/pi-auth.js").PiCredential} credential
+ * @param {{ env?: Record<string, string | undefined>, home?: string }} [options]
+ * @returns {string | null}
+ */
+function resolveOpenCodeApiKey(credential, options = {}) {
+  const fromPi = stringValue(credential?.key ?? credential?.access);
+  if (fromPi) return fromPi;
+
+  const env = options.env ?? process.env;
+  const fromEnv = stringValue(env.OPENCODE_API_KEY);
+  if (fromEnv) return fromEnv;
+
+  const home = options.home ?? homedir();
+  const cliAuthPath = join(home, ".local", "share", "opencode", "auth.json");
+  if (!existsSync(cliAuthPath)) return null;
+  try {
+    const parsed = record(JSON.parse(readFileSync(cliAuthPath, { encoding: "utf-8", flag: "r" })));
+    for (const keyName of ["opencode-go", "opencode", "zen"]) {
+      const entry = record(parsed?.[keyName]);
+      const token = stringValue(entry?.key ?? entry?.access ?? entry?.apiKey);
+      if (token) return token;
+    }
+  } catch {
+    // Ignore malformed CLI store; read-only best effort.
+  }
+  return null;
+}
+
+/**
+ * Parse one window from `GET https://opencode.ai/zen/go/v1/usage`.
+ *
+ * @param {unknown} rawWindow
+ * @param {string} id
+ * @param {string} label
+ * @param {number} windowSeconds
+ * @param {unknown} fallbackResetAt
+ * @param {number} now
+ * @returns {import("../model.js").QuotaWindow | null}
+ */
+function parseGoApiWindow(rawWindow, id, label, windowSeconds, fallbackResetAt, now) {
+  const win = record(rawWindow);
+  if (!win) return null;
+
+  let usedPct = clampPercent(win.usagePercent ?? win.usedPercent ?? win.percent ?? win.utilization);
+  const usedDollars = finiteNumber(win.usageDollars ?? win.usedDollars);
+  const limitDollars = finiteNumber(win.limitDollars);
+
+  if (usedPct === null) {
+    const used =
+      usedDollars ??
+      finiteNumber(win.usedMicroCents ?? win.used ?? win.usage ?? win.consumed ?? win.count ?? win.usedTokens);
+    const limit =
+      limitDollars ??
+      finiteNumber(win.limitMicroCents ?? win.limit ?? win.total ?? win.quota ?? win.max ?? win.cap ?? win.tokenLimit);
+    if (used !== null && limit !== null && limit > 0) {
+      usedPct = clampPercent((used / limit) * 100);
+    }
+  }
+  if (usedPct === null) return null;
+
+  const resetsInSec = finiteNumber(win.resetInSec ?? win.resetsInSec ?? win.resetSeconds);
+  const resetsAt = win.resetsAt ?? win.resetAt ?? fallbackResetAt ?? null;
+  const note =
+    usedDollars !== null && limitDollars !== null && limitDollars > 0
+      ? `$${usedDollars.toFixed(2)} / $${limitDollars.toFixed(2)}`
+      : null;
+
+  return buildWindow({
+    id,
+    label,
+    usedPercent: usedPct,
+    resetsAt: resetsInSec === null ? resetsAt : null,
+    resetsInSec,
+    windowSeconds,
+    note,
+    now,
+  });
+}
+
+/**
+ * Query `GET https://opencode.ai/zen/go/v1/usage` directly with an API key.
+ *
+ * @param {string} key
+ * @param {{ fetchFn?: typeof fetch, timeoutMs?: number, now: number }} options
+ * @returns {Promise<{ ok: boolean, windows: import("../model.js").QuotaWindow[], authError: boolean, error: string | null }>}
+ */
+async function fetchGoUsageByKey(key, options) {
+  const response = await requestJson(ZEN_GO_USAGE_URL, {
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: "application/json",
+    },
+    fetchFn: options.fetchFn,
+    timeoutMs: options.timeoutMs,
+  });
+
+  if (!response.ok) {
+    const errObj = record(record(response.body)?.error);
+    const code = stringValue(errObj?.code);
+    const detail = code === "api_key_expired" ? " (API key expired)" : "";
+    return {
+      ok: false,
+      windows: [],
+      authError: Boolean(response.authError),
+      error: response.authError
+        ? `Pi OpenCode key${detail} was rejected by OpenCode Zen; reconnect OpenCode in Pi`
+        : `OpenCode Go usage request failed: ${response.error}`,
+    };
+  }
+
+  const body = record(response.body) ?? {};
+  const usage = record(body.usage) ?? body;
+  const renewsAt =
+    usage.renewsAt ?? usage.endsAt ?? usage.resetsAt ?? body.renewsAt ?? body.endsAt ?? body.resetsAt ?? null;
+
+  const rollingRaw = usage.rolling ?? usage.rolling5h ?? usage.fiveHour ?? usage.rollingUsage;
+  const weeklyRaw = usage.weekly ?? usage.week ?? usage.weeklyUsage;
+  const monthlyRaw = usage.monthly ?? usage.month ?? usage.monthlyUsage;
+
+  /** @type {import("../model.js").QuotaWindow[]} */
+  const windows = [];
+  const rolling = parseGoApiWindow(rollingRaw, "5h", "5h window", 18000, null, options.now);
+  const weekly = parseGoApiWindow(weeklyRaw, "weekly", "Weekly window", 604800, null, options.now);
+  const monthly = parseGoApiWindow(monthlyRaw, "monthly", "Monthly window", 2592000, renewsAt, options.now);
+  if (rolling) windows.push(rolling);
+  if (weekly) windows.push(weekly);
+  if (monthly) windows.push(monthly);
+
+  if (windows.length === 0) {
+    return { ok: false, windows: [], authError: false, error: null };
+  }
+  return { ok: true, windows, authError: false, error: null };
+}
+
+/**
  * Confirm the Zen key still authenticates, so a degradation can distinguish a
  * dead credential from a missing session.
  *
- * @param {string | undefined} key
+ * @param {string | undefined | null} key
  * @param {typeof fetch | undefined} fetchFn
  * @param {number | undefined} timeoutMs
  * @returns {Promise<string>}
@@ -77,6 +221,28 @@ export async function fetchQuota(credential, options = {}) {
     expiresInMin: options.expiresInMin ?? null,
   };
 
+  // 1. Primary path: query `GET https://opencode.ai/zen/go/v1/usage` directly with the API key.
+  const apiKey = resolveOpenCodeApiKey(credential, { env: options.env, home: options.home });
+  if (apiKey) {
+    const direct = await fetchGoUsageByKey(apiKey, {
+      fetchFn: options.fetchFn,
+      timeoutMs: options.timeoutMs,
+      now,
+    });
+    if (direct.ok) {
+      return {
+        ...base,
+        plan: "Go subscription",
+        windows: direct.windows,
+        error: null,
+        ok: true,
+        updatedAt: new Date(now).toISOString(),
+      };
+    }
+  }
+
+  // 2. Fallback path: resolve session cookie / web console when the API endpoint
+  // did not return windows (or when using a cookie-only setup).
   const session = resolveCookie({
     env: options.env,
     home: options.home,
@@ -112,7 +278,7 @@ export async function fetchQuota(credential, options = {}) {
     };
   }
 
-  const zen = await describeZenKey(credential.key, options.fetchFn, options.timeoutMs);
+  const zen = await describeZenKey(apiKey, options.fetchFn, options.timeoutMs);
   const hint =
     session.origin === "browser"
       ? `the browser session was read from ${session.detail} but was not accepted`

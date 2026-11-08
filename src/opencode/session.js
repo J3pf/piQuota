@@ -356,7 +356,8 @@ export async function fetchGoStatusApi(options = {}) {
     const body = response.body && typeof response.body === "object" ? response.body : null;
     const access = body && "access" in body && body.access && typeof body.access === "object" ? body.access : null;
     const meters = access && "meters" in access ? access.meters : null;
-    const windows = parseGoMeters(meters, { now: options.now });
+    const endsAt = access && "endsAt" in access ? access.endsAt : null;
+    const windows = parseGoMeters(meters, { now: options.now, endsAt });
     if (windows.length === 0) {
       errors.push("Console API returned no Go usage meters");
       return null;

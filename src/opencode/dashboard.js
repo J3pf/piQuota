@@ -41,7 +41,8 @@ export function parseGoMeters(meters, options = {}) {
     const usedPercent = Number.isFinite(limit) && limit > 0 && Number.isFinite(used)
       ? Math.min(100, Math.max(0, (used / limit) * 100))
       : null;
-    return [buildWindow({ id, label, usedPercent, resetsAt: meter.resetsAt, windowSeconds, now: options.now })];
+    const resetsAt = meter.resetsAt ?? (field === "month" ? options.endsAt : null);
+    return [buildWindow({ id, label, usedPercent, resetsAt, windowSeconds, now: options.now })];
   });
 }
 
