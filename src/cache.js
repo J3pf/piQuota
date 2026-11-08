@@ -130,9 +130,10 @@ export function writeCache(report, options = {}) {
   const now = options.now ?? Date.now();
   let finalReport = report;
   if (options.merge) {
-    const existing = readCache({ ...options, path, ttlMs: Number.POSITIVE_INFINITY });
-    if (existing?.report) {
-      finalReport = mergeReportIntoCache(existing.report, report);
+    const existingReport =
+      options.existingReport ?? readCache({ ...options, path, ttlMs: Number.POSITIVE_INFINITY })?.report;
+    if (existingReport) {
+      finalReport = mergeReportIntoCache(existingReport, report);
     }
   }
   const payload = JSON.stringify({ savedAt: now, report: finalReport }, null, 2);
@@ -199,26 +200,31 @@ export function describeCache(options = {}) {
  */
 export async function withCache(options, loader) {
   const requested = options.families;
+  const isPartial = Array.isArray(requested) && requested.length > 0;
+  let existingHit = null;
   if (!options.force) {
-    const hit = readCache(options);
-    if (hit) {
-      const allPresent = !requested || requested.every((fam) => fam in hit.report.byFamily);
+    existingHit = readCache(options);
+    if (existingHit) {
+      const allPresent = !requested || requested.every((fam) => fam in existingHit.report.byFamily);
       if (allPresent) {
         const filteredReport = requested
           ? {
-              ...hit.report,
-              providers: hit.report.providers.filter((p) => requested.includes(p.family)),
+              ...existingHit.report,
+              providers: existingHit.report.providers.filter((p) => requested.includes(p.family)),
               byFamily: Object.fromEntries(
-                Object.entries(hit.report.byFamily).filter(([fam]) => requested.includes(fam)),
+                Object.entries(existingHit.report.byFamily).filter(([fam]) => requested.includes(fam)),
               ),
             }
-          : hit.report;
-        return { report: filteredReport, cached: true, ageMs: hit.ageMs };
+          : existingHit.report;
+        return { report: filteredReport, cached: true, ageMs: existingHit.ageMs };
       }
     }
   }
   const report = await loader();
-  const isPartial = Array.isArray(requested) && requested.length > 0;
-  writeCache(report, { ...options, merge: isPartial || options.merge });
+  writeCache(report, {
+    ...options,
+    merge: isPartial || options.merge,
+    existingReport: existingHit?.report,
+  });
   return { report, cached: false, ageMs: 0 };
 }

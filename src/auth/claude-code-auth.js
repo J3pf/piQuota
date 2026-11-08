@@ -187,21 +187,89 @@ export function claudeCodeProfilePaths(options = {}) {
   return fallback === first ? [first] : [first, fallback];
 }
 
+/** @type {Map<string, { mtimeMs: number, size: number, profile: { email?: string, displayName?: string, organizationType?: string } }>} */
+const profileCache = new Map();
+
+/**
+ * Extract the `oauthAccount` JSON object from `~/.claude.json`, slicing out just
+ * the `oauthAccount` block on large files (> 64 KB) so megabytes of Claude Code
+ * project history do not have to be parsed into a full V8 object tree.
+ *
+ * @param {string} raw
+ * @returns {Record<string, unknown> | null}
+ */
+function extractOauthAccountObject(raw) {
+  if (raw.length > 65_536) {
+    const keyIdx = raw.indexOf('"oauthAccount"');
+    if (keyIdx === -1) return null;
+    const braceStart = raw.indexOf("{", keyIdx + 14);
+    if (braceStart !== -1) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let i = braceStart; i < raw.length; i += 1) {
+        const ch = raw[i];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+        if (ch === "{") depth += 1;
+        else if (ch === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            try {
+              const sliced = JSON.parse(raw.slice(braceStart, i + 1));
+              if (sliced && typeof sliced === "object" && !Array.isArray(sliced)) return sliced;
+            } catch {}
+            break;
+          }
+        }
+      }
+    }
+  }
+  const parsed = JSON.parse(raw);
+  const account = parsed?.oauthAccount;
+  return account && typeof account === "object" && !Array.isArray(account) ? account : null;
+}
+
 /**
  * @param {{ env?: Record<string, string | undefined>, home?: string, profilePath?: string }} [options]
  * @returns {{ email?: string, displayName?: string, organizationType?: string }}
  */
 export function readClaudeCodeProfile(options = {}) {
   for (const path of claudeCodeProfilePaths(options)) {
-    if (!existsSync(path)) continue;
-    let parsed;
+    let stat;
     try {
-      parsed = JSON.parse(readFileSync(path, { encoding: "utf-8", flag: "r" }));
+      stat = statSync(path);
     } catch {
       continue;
     }
-    const account = parsed?.oauthAccount;
-    if (!account || typeof account !== "object") continue;
+    const cached = profileCache.get(path);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      if (Object.keys(cached.profile).length > 0) return { ...cached.profile };
+      continue;
+    }
+
+    let account;
+    try {
+      const raw = readFileSync(path, { encoding: "utf-8", flag: "r" });
+      account = extractOauthAccountObject(raw);
+    } catch {
+      continue;
+    }
+    if (!account || typeof account !== "object") {
+      profileCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, profile: {} });
+      continue;
+    }
 
     /** @type {{ email?: string, displayName?: string, organizationType?: string }} */
     const profile = {};
@@ -211,7 +279,8 @@ export function readClaudeCodeProfile(options = {}) {
     if (email) profile.email = email;
     if (displayName) profile.displayName = displayName;
     if (organizationType) profile.organizationType = organizationType;
-    if (Object.keys(profile).length > 0) return profile;
+    profileCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, profile });
+    if (Object.keys(profile).length > 0) return { ...profile };
   }
   return {};
 }

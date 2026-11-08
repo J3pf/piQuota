@@ -11,12 +11,15 @@
  * layer then republishes the previous good snapshot, so the card survives.
  */
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 const DEFAULT_BACKOFF_MS = 5 * 60 * 1000;
 const MAX_BACKOFF_MS = 30 * 60 * 1000;
+
+/** @type {Map<string, { mtimeMs: number, size: number, state: Record<string, number> }>} */
+const backoffMemCache = new Map();
 
 /**
  * @param {{ env?: Record<string, string | undefined>, home?: string, path?: string }} [options]
@@ -34,10 +37,19 @@ export function resolveBackoffPath(options = {}) {
  * @returns {Record<string, number>}
  */
 export function readBackoff(options = {}) {
+  const path = resolveBackoffPath(options);
   try {
-    const parsed = JSON.parse(readFileSync(resolveBackoffPath(options), "utf-8"));
-    return parsed && typeof parsed === "object" ? parsed : {};
+    const stat = statSync(path);
+    const cached = backoffMemCache.get(path);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return { ...cached.state };
+    }
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
+    const state = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    backoffMemCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, state: { ...state } });
+    return state;
   } catch {
+    backoffMemCache.delete(path);
     return {};
   }
 }
@@ -59,8 +71,15 @@ function writeBackoff(state, options = {}) {
       // Best-effort in environments where chmod is not supported.
     }
     renameSync(temporary, path);
+    try {
+      const stat = statSync(path);
+      backoffMemCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, state: { ...state } });
+    } catch {
+      backoffMemCache.delete(path);
+    }
     return true;
   } catch {
+    backoffMemCache.delete(path);
     try {
       rmSync(temporary, { force: true });
     } catch {}

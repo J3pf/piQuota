@@ -200,23 +200,34 @@ export async function collectQuota(options = {}) {
   }
 
   // Claude is the one family with a second, non-Pi source, so it is resolved
-  // before the per-family loop and then treated exactly like any other credential.
-  const claude = resolveClaudeCredentials({
-    credentials: loaded.credentials,
-    env,
-    home: options.home,
-    platform: options.platform,
-    usersRoot: options.usersRoot,
-    claudeCodePaths: options.claudeCodePaths,
-  });
+  // before the per-family loop only when `claude` is among the requested families.
+  const claude = families.includes("claude")
+    ? resolveClaudeCredentials({
+        credentials: loaded.credentials,
+        env,
+        home: options.home,
+        platform: options.platform,
+        usersRoot: options.usersRoot,
+        claudeCodePaths: options.claudeCodePaths,
+        now: options.now,
+      })
+    : {
+        credentials: [],
+        mode: normalizeClaudeSourceMode(env.PI_QUOTA_CLAUDE_SOURCE),
+        unavailable: null,
+        claudeCodePaths: options.claudeCodePaths ?? [],
+        recoveredLock: null,
+      };
 
   /**
    * @param {string} family
    * @returns {import("./auth/pi-auth.js").PiCredential[]}
    */
-  const piCodexCredentials = loaded.credentials.filter((credential) => credential.family === "codex");
+  const piCodexCredentials = families.includes("codex")
+    ? loaded.credentials.filter((credential) => credential.family === "codex")
+    : [];
   const codexCliFallback =
-    piCodexCredentials.length === 0
+    families.includes("codex") && piCodexCredentials.length === 0
       ? loadCodexCliCredential({
           env,
           home: options.home,
