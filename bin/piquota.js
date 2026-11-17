@@ -25,7 +25,7 @@ import { mergeLastGood } from "../src/sticky.js";
 import { renderBoxWidget, renderCompact, renderPanel, renderStatusLine } from "../src/render/panel.js";
 import { ansiPalette } from "../src/render/theme.js";
 
-const VERSION = "0.12.0";
+const VERSION = "0.13.0";
 
 const HELP = `piquota ${VERSION} — read-only quota from Pi's provider credentials
 
