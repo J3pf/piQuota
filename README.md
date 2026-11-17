@@ -36,6 +36,10 @@ shuvquota, and it never writes to a credential file.
 * Browser cookie databases are copied to a private temp dir and opened
   read-only. This is only used to fetch the opencode.ai session cookie that Pi
   does not store.
+* The only foreign binaries executed are the authenticated `gh` CLI and Google's
+  `agy` CLI, both through `src/exec.js`. `agy --print /usage` burns zero tokens,
+  and piQuota never opens agy's credential store: it only runs the command and
+  reads the quota report on stdout.
 * `/quota` never injects quota into the LLM context: the extension only calls
   `ui.setStatus`, `ui.setWidget` and `ui.notify`.
 * Nothing is written outside these paths:
@@ -55,11 +59,21 @@ shuvquota, and it never writes to a credential file.
 | --- | --- | --- | --- |
 | Claude | Claude Code CLI store, else `anthropic.access` | `GET api.anthropic.com/api/oauth/usage` | ✅ 5h + weekly + plan |
 | Codex | `openai-codex.access` + `accountId` (or `~/.codex/auth.json`) | `GET chatgpt.com/backend-api/wham/usage` | ✅ 5h + weekly + plan |
-| Antigravity | `antigravity.access` + `projectId` | `POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` | ✅ Gemini + Claude/GPT buckets, **with in-memory refresh** |
+| Antigravity | `antigravity.access` + `projectId`, else the `agy` CLI | `POST cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`, else `agy --print /usage --output-format json` | ✅ Gemini + Claude/GPT buckets, **with in-memory refresh**; the CLI source covers bridge/ACP installs |
 | OpenCode Go | `opencode-go.key` (fallback opencode.ai session cookie) | `GET opencode.ai/zen/go/v1/usage` (fallback `/console/api/go/status` & `/workspace/<id>/go`) | ✅ 5h + weekly + monthly, verified live |
 | GitHub Copilot (auto) | `github-copilot.refresh` / `access` | `GET api.github.com/copilot_internal/user` | ✅ monthly premium requests + chat/completions |
 | OpenRouter (auto) | `openrouter.key` | `GET openrouter.ai/api/v1/key` + `/api/v1/credits` | ✅ key limit + prepaid credit balance |
 | GitHub Actions (opt-in) | Authenticated `gh` CLI | `gh api /organizations/<org>/settings/billing/usage/summary?product=Actions` | ✅ org-wide monthly Linux minutes, plan-derived allowance |
+
+**Antigravity has two sources.** Pi's own `antigravity.access` wins whenever it
+exists: one fast HTTP call, with the token refreshed in memory. Installations
+driven by `@estebanforge/pi-antigravity-bridge`, or by any other client that
+speaks ACP to Google's `agy` CLI, never put a Google token in Pi at all: the CLI
+owns that identity, so piQuota falls back to `agy --print /usage --output-format
+json`. That command prints the same account buckets (both groups, `5h` and
+`weekly`) and burns zero tokens, at the cost of a few seconds per uncached run.
+`PI_QUOTA_ANTIGRAVITY_SOURCE=pi` forbids the fallback, `agy` forces it, and
+`PI_QUOTA_AGY_BIN` overrides binary discovery.
 
 Four findings worth recording, each of which cost a wrong hypothesis:
 
@@ -429,6 +443,7 @@ piquota omarchy                  # write pi-claude.json, pi-codex.json, ... once
 ```
 src/auth/pi-auth.js            read-only auth.json reader, WSL + Linux, deduplicated
 src/auth/claude-code-auth.js   read-only Claude Code store; never carries its refresh token
+src/auth/agy-auth.js           locates the agy CLI for bridge/ACP installs; never opens its store
 src/auth/jwt.js                Codex JWT payload reader (claim keys contain dots)
 src/browser/cookies.js         read-only Firefox/Chromium cookie access via a temp copy
 src/browser/history.js         workspace ids recovered from a copied places.sqlite
@@ -437,6 +452,7 @@ src/opencode/dashboard.js      three-strategy parser for the Go plan page
 src/providers/*.js             one file per provider; each degrades instead of throwing
 src/providers/github-actions.js  plan-derived org Actions minutes via authenticated gh CLI
 src/providers/antigravity-oauth.js  in-memory refresh with Google's public client
+src/providers/antigravity-agy.js    `agy --print /usage` quota for bridge/ACP installs
 src/providers/backoff.js       per-family throttle state
 src/sticky.js                  last-good snapshots and transient/throttle recovery
 src/engine.js                  collectQuota() -> one normalized report
@@ -446,7 +462,7 @@ src/cache.js                   report cache at ~/.cache/pi-quota/usage.json
 src/omarchy/record.js          pure mapping from the report to Omarchy usage records
 src/omarchy/publish.js         atomic writer for pi-*.json, and stale-record cleanup
 src/cli/args.js                argument parsing, and the flag/positional split
-src/exec.js                    the one place that spawns gh CLI binary
+src/exec.js                    the one place that spawns foreign binaries (gh, agy)
 src/http.js                    fetch wrapper: timeouts, JSON, redaction
 contrib/systemd/               user service and timer behind `install.sh --omarchy-timer`
 bin/piquota.js                 the only CLI
@@ -464,6 +480,8 @@ extensions/quota-panel.ts      Pi TUI line and /quota
 | Claude reports `plan pro` but the window looks wrong | The store is chosen by preference, not by success. `PI_QUOTA_CLAUDE_SOURCE=pi piquota` forces the other source. |
 | `rate limited (HTTP 429); retry in Ns` | The vendor throttled the usage endpoint. Wait, or raise `--ttl`. |
 | `Antigravity token rejected` | Refresh failed; `/login antigravity` in Pi. `--no-refresh` disables the attempt. |
+| `agy CLI was not found at …` | A bridge/ACP install has no Antigravity CLI where piQuota looked. Install it, or set `PI_QUOTA_AGY_BIN`, then run `agy` once to sign in. |
+| `agy is not signed in` | The CLI's own Google session lapsed. Run any `agy` command in a terminal; piQuota never refreshes it. |
 | `no "auth" cookie for opencode.ai in N readable store(s)` | Run `piquota auth opencode`, or paste the cookie. |
 | `only encrypted Chromium stores found` | Log in with Firefox; Chrome on Windows uses DPAPI. |
 | `unknown flag: --x` | The flag is a typo or was removed. `piquota --help` lists every flag. |
@@ -472,14 +490,15 @@ extensions/quota-panel.ts      Pi TUI line and /quota
 ## Tests
 
 ```bash
-node --test tests/*.test.mjs     # 243 tests, fake tokens only, no network
+node --test tests/*.test.mjs     # 258 tests, fake tokens only, no network
 ```
 
 Modules covered: `auth.json` parsing and de-duplication, the Claude Code store
 (including that the refresh token never leaves it and that reading leaves the file
 byte-identical), Claude source precedence, the five providers (including GitHub
 Actions plan resolution, opt-in gating and degradation, the two Antigravity
-failures and the OpenCode degradation), the dashboard parser's three
+failures and the OpenCode degradation), the `agy` CLI source (binary discovery,
+the live `/usage` payload, and every degradation path), the dashboard parser's three
 strategies, the Firefox and Linux Chromium cookie readers against synthetic SQLite
 databases, the Antigravity refresh (in-memory only), sticky and last-good snapshots
 resilience, the Omarchy record mapping and atomic writer, the renderers, the Pi

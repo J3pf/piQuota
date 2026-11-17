@@ -171,3 +171,36 @@ export function antigravityUsageBody() {
     ],
   };
 }
+
+/**
+ * The `agy --print /usage --output-format json` envelope.
+ *
+ * Same buckets as the Cloud Code response, spelled the way the CLI spells
+ * them: snake_case fields, `name`/`id` instead of `displayName`/`bucketId`, and
+ * a `command` wrapper.
+ *
+ * @param {{ groups?: Array<Record<string, any>> }} [overrides]
+ */
+export function agyUsageBody(overrides = {}) {
+  const groups = (overrides.groups ?? antigravityUsageBody().groups).map((group) => ({
+    name: group.displayName,
+    ...(group.description ? { description: group.description } : {}),
+    buckets: group.buckets.map((bucket) => ({
+      id: bucket.bucketId,
+      name: bucket.displayName,
+      window: bucket.window,
+      remaining_fraction: bucket.remainingFraction,
+      reset_time: bucket.resetTime,
+      ...(bucket.description ? { description: bucket.description } : {}),
+    })),
+  }));
+  return {
+    conversation_id: "",
+    status: "SUCCESS",
+    response: "",
+    duration_seconds: 0,
+    num_turns: 0,
+    usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 },
+    command: { name: "usage", data: { description: "Within each group, models share a weekly limit.", groups } },
+  };
+}

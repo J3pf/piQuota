@@ -352,3 +352,20 @@ test("renderPanel clips ANSI-colored lines by visible width without truncating h
     assert.equal(visibleLength(lines[i]), visibleLength(lines[0]), `line ${i} visible width matches top border`);
   }
 });
+
+test("an agy CLI antigravity result names the CLI it actually read", () => {
+  const plainPaint = (key, text) => text;
+  const rendered = renderProviderLines(
+    providerFixture({
+      family: "antigravity",
+      label: "Antigravity (agy CLI)",
+      account: "agy CLI",
+      sourceKind: "agy-cli",
+      windows: [windowFixture({ id: "gemini-5h", label: "Gemini · 5h" })],
+    }),
+    plainPaint,
+  ).join("\n");
+  assert.match(rendered, /Antigravity \(agy CLI\)/);
+  assert.equal(rendered.includes("Antigravity (Pi)"), false, "there is no Pi entry to point the user at");
+});
+

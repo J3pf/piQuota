@@ -126,11 +126,15 @@ function mapLimits(windows, provider) {
 /**
  * @param {string} family
  * @param {string | null | undefined} error
+ * @param {string | null | undefined} [sourceKind] Which store answered, so the hint names it.
  * @returns {{ usageStatusText: string, authHelpText: string }}
  */
-export function describeError(family, error) {
+export function describeError(family, error, sourceKind) {
   const kind = errorKind(error);
-  const login = LOGIN_HINT[family] ?? "Sign in again to restore usage.";
+  const login =
+    sourceKind === "agy-cli"
+      ? "Run `agy` once in a terminal to sign in again."
+      : LOGIN_HINT[family] ?? "Sign in again to restore usage.";
   switch (kind) {
     case "expired":
       return { usageStatusText: "Sign-in expired", authHelpText: login };
@@ -229,7 +233,7 @@ export function buildRecord(provider, options = {}) {
   if (failed && errorKind(provider.error) === "missing") return null;
 
   const status = failed
-    ? describeError(provider.family, provider.error ?? "no usage windows")
+    ? describeError(provider.family, provider.error ?? "no usage windows", provider.sourceKind)
     : { usageStatusText: "", authHelpText: "" };
 
   const id = recordId(provider.family);

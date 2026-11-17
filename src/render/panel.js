@@ -179,7 +179,9 @@ function wrapPlain(text, width) {
  * @returns {string[]}
  */
 export function renderProviderLines(provider, paint, contentWidth = MAX_WIDTH) {
-  const title = FAMILY_TITLE[provider.family] ?? provider.label;
+  // The title names the source that answered: a bridge/ACP install has no Pi
+  // entry, so "Antigravity (Pi)" would send the user to /login for nothing.
+  const title = provider.sourceKind === "agy-cli" ? provider.label : FAMILY_TITLE[provider.family] ?? provider.label;
   /** @type {string[]} */
   const lines = [];
 

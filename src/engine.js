@@ -7,6 +7,7 @@
  */
 
 import { checkFreshness, LABEL_BY_FAMILY, loadCodexCliCredential, loadPiCredentials, resolveAuthPaths } from "./auth/pi-auth.js";
+import { loadAgyCredential, resolveAgySource } from "./auth/agy-auth.js";
 import { loadClaudeCodeCredential } from "./auth/claude-code-auth.js";
 import { redact } from "./http.js";
 import { degradedResult, displayIdentity, selectPrimaryWindow } from "./model.js";
@@ -14,6 +15,7 @@ import { backoffState, clearBackoff, isAuthFailure, isThrottled, recordBackoff, 
 import { fetchQuota as fetchClaude } from "./providers/claude.js";
 import { fetchQuota as fetchCodex } from "./providers/codex.js";
 import { fetchQuota as fetchAntigravity } from "./providers/antigravity.js";
+import { fetchQuota as fetchAntigravityAgy } from "./providers/antigravity-agy.js";
 import { fetchQuota as fetchOpenCodeGo } from "./providers/opencode-go.js";
 import { fetchQuota as fetchCopilot } from "./providers/copilot.js";
 import { fetchQuota as fetchOpenRouter } from "./providers/openrouter.js";
@@ -142,6 +144,20 @@ const PROVIDERS = {
 };
 
 /**
+ * Pick the fetcher for one credential.
+ *
+ * Antigravity has two sources and only the credential knows which one it is:
+ * Pi's OAuth store answers over HTTP, the `agy` CLI answers through its own
+ * print mode.
+ *
+ * @param {any} credential
+ * @returns {(credential: any, options?: any) => Promise<import("./model.js").QuotaResult>}
+ */
+function providerFor(credential) {
+  return credential.sourceKind === "agy-cli" ? fetchAntigravityAgy : PROVIDERS[credential.family];
+}
+
+/**
  * @typedef {Object} PiQuotaReport
  * @property {string} engine
  * @property {number} schemaVersion
@@ -236,9 +252,32 @@ export async function collectQuota(options = {}) {
         })
       : null;
 
+  const antigravitySource = resolveAgySource({ env });
+  const piAntigravityCredentials = families.includes("antigravity")
+    ? loaded.credentials.filter((credential) => credential.family === "antigravity")
+    : [];
+  const antigravityCliFallback =
+    families.includes("antigravity") && (piAntigravityCredentials.length === 0 || antigravitySource === "agy")
+      ? loadAgyCredential({
+          env,
+          home: options.home,
+          platform: options.platform,
+          paths: options.paths,
+          binary: options.agyBin,
+        })
+      : null;
+
   const credentialsFor = (family) => {
     if (family === "claude") return claude.credentials;
     if (family === "codex") return piCodexCredentials.length > 0 ? piCodexCredentials : codexCliFallback ? [codexCliFallback] : [];
+    if (family === "antigravity") {
+      // The bridge-style installs keep the Google identity inside `agy`, so Pi's
+      // store has no `antigravity` entry to read. The CLI source replaces it
+      // unless the user pinned the source to `pi`.
+      if (antigravitySource === "agy" && antigravityCliFallback) return [antigravityCliFallback];
+      if (piAntigravityCredentials.length > 0) return piAntigravityCredentials;
+      return antigravityCliFallback ? [antigravityCliFallback] : [];
+    }
     if (family === "github-actions") return [GH_CLI_CREDENTIAL];
     return loaded.credentials.filter((credential) => credential.family === family);
   };
@@ -331,7 +370,7 @@ export async function collectQuota(options = {}) {
             `${family}: the ${expiredTokenName(credential)} expired ${Math.abs(freshness.expiresInMin ?? 0)}m ago; ${refreshHint(credential)}`,
           );
         }
-        const fetchQuota = PROVIDERS[family];
+        const fetchQuota = providerFor(credential);
         try {
           const result = await fetchQuota(credential, {
             now,
@@ -426,6 +465,9 @@ function missingCredentialMessage(family, context = {}) {
   }
   if (family === "github-actions") {
     return "GitHub Actions uses the authenticated gh CLI; no Pi-store credential is required";
+  }
+  if (family === "antigravity") {
+    return "no antigravity credential in the Pi store and no agy CLI on PATH (run /login antigravity in Pi, or install the Antigravity CLI and sign in once)";
   }
   if (family === "codex" && context.hasOpenAi) {
     return context.hasOpenAiChatGptOAuth

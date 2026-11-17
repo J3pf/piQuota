@@ -12,6 +12,7 @@ Field **names** only; values never appear in code, logs, tests or artifacts.
 | Claude Code CLI store | `$PI_QUOTA_CLAUDE_CODE_CREDENTIALS`, else `$CLAUDE_CONFIG_DIR/.credentials.json`, else `$HOME/.claude/.credentials.json` (plus `Claude Code-credentials` in macOS Keychain when the file is absent) | read-only (`flag: "r"` / `security find-generic-password`); the second Claude source |
 | Claude Code profile | `$CLAUDE_CONFIG_DIR/.claude.json`, else `$HOME/.claude.json` | read-only; only `oauthAccount.emailAddress`, `displayName` and `organizationType` are read, never project history |
 | Codex CLI store | `$PI_QUOTA_CODEX_AUTH_PATH`, else `$HOME/.codex/auth.json` | read-only (`flag: "r"`); fallback when Pi store has no `openai-codex` entry; `refresh_token` is never read |
+| Antigravity CLI (`agy`) | `$PI_QUOTA_AGY_BIN`, else `agy` on `PATH` (then `~/.local/bin`, `~/.gemini/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`) | never opened: the binary is executed as `agy --print /usage --output-format json`, which burns zero tokens, and only its stdout is parsed; the CLI owns the Google session |
 | OpenCode Go API key | `auth.json` (`opencode-go` / `opencode`), else `$OPENCODE_API_KEY`, else `${XDG_DATA_HOME:-~/.local/share}/opencode/auth.json` | read-only (`flag: "r"`); primary source for `GET /zen/go/v1/usage` |
 | opencode.ai session | `OPENCODE_GO_AUTH_COOKIE`, else `${XDG_CONFIG_HOME:-~/.config}/pi-quota/opencode-cookie`, else a local browser cookie database (Firefox, or Chromium/Chrome/Edge/Brave on Linux) | read-only fallback; browser databases are copied to a temp dir first |
 
@@ -96,6 +97,7 @@ Codex JWT **payload** only (signature never verified, token never disclosed):
 | `PI_QUOTA_CLAUDE_CODE_CREDENTIALS` | replace the Claude Code credential file |
 | `PI_QUOTA_CLAUDE_SOURCE` | `auto` (default, prefers Claude Code), `claude-code`, or `pi` |
 | `PI_QUOTA_CODEX_SOURCE`, `PI_QUOTA_CODEX_AUTH_PATH` | `auto` (default, falls back to `~/.codex/auth.json`) or `pi`; override the Codex CLI store path |
+| `PI_QUOTA_AGY_BIN`, `PI_QUOTA_ANTIGRAVITY_SOURCE` | path to the `agy` binary; `auto` (default, falls back to the CLI when the Pi store has no `antigravity` entry), `pi` (never use the CLI) or `agy` (always prefer it) |
 | `CLAUDE_CONFIG_DIR` | Claude Code's own relocation variable, honoured as-is |
 | `OPENCODE_API_KEY` | supply the OpenCode Go API key directly (`GET /zen/go/v1/usage`) |
 | `OPENCODE_GO_AUTH_COOKIE`, `OPENCODE_GO_WORKSPACE_ID` | supply the opencode.ai session directly (fallback) |

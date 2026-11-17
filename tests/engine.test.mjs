@@ -12,6 +12,7 @@ import test from "node:test";
 import { collectQuota } from "../src/engine.js";
 import { clearCache, readCache, withCache, writeCache } from "../src/cache.js";
 import {
+  agyUsageBody,
   antigravityUsageBody,
   claudeUsageBody,
   codexUsageBody,
@@ -433,4 +434,88 @@ test("collectQuota falls back to ~/.codex/auth.json read-only when Pi store lack
   assert.equal(codex.sourceKind, "codex-cli");
   assert.equal(codex.plan, "plus");
   assert.equal(JSON.stringify(report).includes("rt_secret_never_load"), false);
+});
+
+test("antigravity falls back to the agy CLI when the Pi store has no antigravity entry", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-quota-agy-engine-"));
+  const authPath = join(dir, "auth.json");
+  writeFileSync(
+    authPath,
+    JSON.stringify({ "openai-codex": { type: "oauth", access: "fake-access", accountId: "acct_fixture" } }),
+  );
+  const calls = [];
+  const runCommand = (command, args) => {
+    calls.push({ command, args });
+    return { status: 0, stdout: JSON.stringify(agyUsageBody()), stderr: "", error: null };
+  };
+
+  const report = await collectQuota({
+    paths: [authPath],
+    claudeCodePaths: [],
+    now: NOW,
+    families: ["antigravity"],
+    runCommand,
+    env: { PI_QUOTA_AGY_BIN: "/opt/agy" },
+    stores: [],
+    allowBrowser: false,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "/opt/agy");
+  const antigravity = report.byFamily.antigravity[0];
+  assert.equal(antigravity.ok, true);
+  assert.notEqual(antigravity.notConfigured, true);
+  assert.equal(antigravity.sourceKind, "agy-cli");
+  assert.equal(antigravity.account, "agy CLI");
+  assert.deepEqual(antigravity.windows.map((window) => window.id), ["gemini-weekly", "gemini-5h", "claude-gpt-weekly"]);
+});
+
+test("an antigravity entry in the Pi store wins over the agy CLI unless the source is forced", async () => {
+  const base = {
+    paths: [FIXTURE],
+    claudeCodePaths: [],
+    now: NOW,
+    families: ["antigravity"],
+    stores: [],
+    allowBrowser: false,
+    refresh: false,
+  };
+  const runCommand = (command) => ({ status: 0, stdout: JSON.stringify(agyUsageBody()), stderr: "", error: null });
+
+  const { fetchFn } = fullRoutes();
+  const report = await collectQuota({ ...base, fetchFn, runCommand, env: { PI_QUOTA_AGY_BIN: "/opt/agy" } });
+  assert.equal(report.byFamily.antigravity[0].sourceKind, "pi");
+
+  const forced = await collectQuota({
+    ...base,
+    fetchFn,
+    runCommand,
+    env: { PI_QUOTA_AGY_BIN: "/opt/agy", PI_QUOTA_ANTIGRAVITY_SOURCE: "agy" },
+  });
+  assert.equal(forced.byFamily.antigravity[0].sourceKind, "agy-cli");
+  assert.equal(forced.byFamily.antigravity[0].ok, true);
+});
+
+test("PI_QUOTA_ANTIGRAVITY_SOURCE=pi keeps the missing-credential message", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-quota-agy-off-"));
+  const authPath = join(dir, "auth.json");
+  writeFileSync(authPath, JSON.stringify({ "openai-codex": { type: "oauth", access: "fake-access" } }));
+
+  const report = await collectQuota({
+    paths: [authPath],
+    claudeCodePaths: [],
+    now: NOW,
+    families: ["antigravity"],
+    runCommand: () => {
+      throw new Error("the CLI must not run when the source is pinned to pi");
+    },
+    env: { PI_QUOTA_AGY_BIN: "/opt/agy", PI_QUOTA_ANTIGRAVITY_SOURCE: "pi" },
+    stores: [],
+    allowBrowser: false,
+  });
+
+  const antigravity = report.byFamily.antigravity[0];
+  assert.equal(antigravity.ok, false);
+  assert.equal(antigravity.notConfigured, true);
+  assert.match(antigravity.error ?? "", /no antigravity credential in the Pi store/);
 });

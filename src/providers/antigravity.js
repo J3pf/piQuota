@@ -177,10 +177,12 @@ async function resolveProjectId(access, base, fetchFn, timeoutMs) {
  * Short group tag so multi-group accounts read as "Gemini · 5h window" and
  * "Claude/GPT · 5h window" instead of two identical rows.
  *
+ * Exported for the `agy` CLI provider: both sources report the same groups.
+ *
  * @param {string} groupName
  * @returns {string}
  */
-function shortGroup(groupName) {
+export function shortGroup(groupName) {
   const text = groupName.toLowerCase();
   if (text.includes("gemini")) return "Gemini";
   if (text.includes("claude") || text.includes("gpt")) return "Claude/GPT";
@@ -193,7 +195,7 @@ function shortGroup(groupName) {
  * @param {number} now
  * @returns {import("../model.js").QuotaWindow | null}
  */
-function windowFromBucket(bucket, context, now) {
+export function windowFromBucket(bucket, context, now) {
   const remainingFraction = finiteNumber(bucket.remainingFraction ?? bucket.remaining_fraction);
   if (remainingFraction === null) return null;
 

@@ -11,7 +11,7 @@ Instructions, architecture rules, and testing guidelines for AI coding agents wo
 - **JSON & External Integrations**: `piquota --json` structured quota feed for `rp-host` and automation tools.
 
 ### Core Philosophy
-1. **Credentials Pi Already Owns**: Do not duplicate authentication or invent new login workflows when credentials already exist in `~/.pi/agent/auth.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`, or `~/.local/share/opencode/auth.json`.
+1. **Credentials Pi Already Owns**: Do not duplicate authentication or invent new login workflows when credentials already exist in `~/.pi/agent/auth.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`, or `~/.local/share/opencode/auth.json`. When the account lives inside a vendor CLI instead (Google's `agy`, which is what `@estebanforge/pi-antigravity-bridge` and other ACP clients use), ask that CLI for the numbers (`agy --print /usage`) rather than reading or refreshing its credential store.
 2. **Strict Read-Only Guarantee**: Never mutate credential files on disk.
 3. **Zero Runtime Dependencies**: Written entirely in vanilla ES Modules targeting Node.js `>=20.0.0` using native `node:sqlite`, `node:fs`, and global `fetch`.
 

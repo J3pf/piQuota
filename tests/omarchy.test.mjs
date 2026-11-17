@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { nativeFamilies, preSkippedFamilies, runOmarchyCommand, skippedFamilies } from "../src/cli/commands/omarchy.js";
 import { publishRecords, resolveOmarchyDir, syncOmarchyAssets } from "../src/omarchy/publish.js";
-import { buildRecord, buildRecords } from "../src/omarchy/record.js";
+import { buildRecord, buildRecords, describeError } from "../src/omarchy/record.js";
 
 const NOW = Date.parse("2026-10-04T05:00:00.000Z");
 
@@ -442,4 +442,12 @@ test("openrouter prepaid credits populate native Omarchy balance ledger", () => 
   });
 });
 
+test("describeError points an agy CLI failure at the CLI, not at /login", () => {
+  const cli = describeError("antigravity", "agy is not signed in; run `agy` once in a terminal to authenticate", "agy-cli");
+  assert.match(cli.authHelpText, /`agy`/);
+  assert.equal(cli.authHelpText.includes("/login antigravity"), false);
+
+  const pi = describeError("antigravity", "Antigravity token rejected; run /login antigravity in Pi", "pi");
+  assert.match(pi.authHelpText, /\/login antigravity/);
+});
 
